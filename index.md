@@ -2,15 +2,6 @@
 
 ## Docs
 
-<!--
-- principles
-- - struct is first class citizen
-- - tags are also first class citizens
-- - favour declarative over imperative
-- - define migrations, seeds, models, dtos, controllers, routes, services
-    middlewares, configs, the platform would invoke
- -->
-
 ### Introduction
 
 Goose is an awesome Go framework for building web, api and cli applications. It is designed to be simple, fast, and flexible, allowing developers to create powerful applications with ease.
@@ -39,10 +30,19 @@ The aim of Goose is to be an all-in-one, modular, scalable platform for building
 
 - **Cross-Platform**: Goose supports app development for Web, CLI, and APIs
 
+#### Principles
+
+- Structs are first-class citizens
+- Tags are also first-class citizens
+- Favour declarative over imperative
+- Define migrations, seeds, models, dtos, controllers, routes, services, middlewares, configs, the platform would invoke them
+- Stick to Go idioms and conventions, native, built-in packages wherever possible
+
 #### Getting Started
 
 To get started with Goose, choose one of these:
 
-1. [Web](./getting-started/web.md)
-2. [API](./getting-started/api.md)
-3. [CLI](./getting-started/cli.md)
+- [Getting Started](getting-started/index.md)
+- [Web](./building-blocks/web.md)
+- [API](./building-blocks/api.md)
+- [CLI](./building-blocks/cli.md)
