@@ -1,209 +1,166 @@
-<!--
-// Awesome Goose
-// Container
-// The core part of this container package is cloned from https://github.com/golobby/container
-//
-// Container is a dependency injection container that allows you to bind abstractions to concrete implementations.
-// It supports both singleton and transient bindings, and allows you to resolve dependencies by calling functions or
-// resolving interfaces.
-//
-// It is designed to be simple and easy to use, while providing powerful features for managing dependencies
-// in your application. -->
+# Goose Service Container
 
-<!-- // TODO:
-// Features:
-//
-// Binding
-// - bind
-// - bindif
-// - singleton
-// - singletonIf
-// - scoped (request scoped)
-// - scopedIf
-// - tagging/grouped binds (a set of interfaces bind & resolved together)
-// - primitives (bind primitives like number, strings etc using token)
-// - directly bind a struct type, without interface or name
-//
-// Resolve
-// - resolve
-// - resolve optional resolve with tag
-// - directly resolve type
-//
-// Events
-// - resolving
-// - rebinding
-// - call a method for an binding
-// - core platform types should (e.g controllers, event listeners, middleware, and more) should embed container -->
+The Goose service container is a robust, production-ready dependency injection system for Go applications. It manages the lifecycle of services and their dependencies, providing automatic resolution, injection, and lifecycle hooks for advanced use cases.
 
-# Goose Framework: Service Container Documentation
+## Key Features
 
-The Goose service container is a core component of the framework, responsible for managing the lifecycle of services and their dependencies. It provides a powerful, in-memory registry for resolving and injecting dependencies seamlessly across the application.
-
-## Introduction
-
-The service container:
-
-- Maintains an **in-memory registry** of services.
-- Acts as the **main entry point** for the framework.
-- Is responsible for **creating, resolving, and managing the lifecycle** of providers and their dependencies.
+- **In-memory registry** for services and dependencies
+- **Automatic dependency injection** for structs and functions
+- **Singleton by default** (with extensibility for other scopes)
+- **Lifecycle hooks** (`OnRegister`, `OnResolve`) for service events
+- **Reflection caching** for high performance
+- **Support for unexported fields** (using `unsafe`)
+- **Flexible registration** for structs, factory functions, and interface-to-implementation bindings
+- **Method invocation** with automatic argument resolution
 
 ## Principles
 
-The Goose service container is designed with the following principles in mind:
+1. **Minimal Configuration**
+   - No manual wiring required; dependencies are resolved automatically.
+2. **Automatic Resolution**
+   - Supports interfaces, structs, functions, and primitives.
+3. **Global Accessibility**
+   - Works across the entire framework, including controllers, middlewares, and more.
 
-1. **Minimal Configuration**:
+## Usage
 
-   - Developers should not need to explicitly inject dependencies into their providers.
-   - Dependencies are automatically resolved and injected by the container.
+### Service Registration
 
-2. **Automatic Resolution**:
+You can register services as either structs, factory functions, or bind interfaces to implementations. All services are singletons by default.
 
-   - The container automatically resolves dependencies for services, including interfaces, structs, functions, and other primitives.
+#### Struct Registration: Constructor Method Discovery
 
-3. **Global Accessibility**:
-   - The container is designed to work across the entire framework, enabling seamless integration with requests, responses, middlewares, controllers, and other Goose primitives.
-
-## Features
-
-### 1. **Service Registration**
-
-The container supports multiple ways to register services:
-
-- **Register a Service**:
-  - The container can auto-resolve embedded dependencies or use a `New` method (if defined) as a factory method to create a new instance of the service.
-  - If a `New` method is defined, embedded dependencies are not auto-resolved.
+When registering a struct, the container will look for a constructor method named either `New` or `New<ServiceName>` (e.g., `NewLogger` for a `Logger` service). If such a method exists, it will be used as the factory for the service. Otherwise, dependencies are auto-injected into fields.
 
 ```go
-// example of a service with a New method
+// Register a struct (uses New or New<ServiceName> method if present, else auto-injects dependencies)
+container.Register(Logger{}, "", true) // Will use Logger.NewLogger() if present
+container.Register(MyService{}, "", true) // Will use MyService.New() or MyService.NewMyService() if present
+```
+
+#### Factory Function Registration
+
+```go
+// Register a factory function
+container.Register(func() *MyService {
+    return &MyService{ /* ... */ }
+}, "", true)
+```
+
+#### Interface to Implementation Registration
+
+```go
+// Register an interface to a concrete implementation (factory returns interface)
+container.Register(func() MyInterface {
+    return &MyImplementation{}
+}, "", true)
+```
+
+### Service Resolution
+
+Resolve a service by providing a pointer to the desired type (interface or struct):
+
+```go
+myService := &MyService{}
+err := container.Resolve(myService, "")
+
+myInterface := new(MyInterface) // or var myInterface MyInterface = nil
+err := container.Resolve(&myInterface, "")
+```
+
+If the service implements `OnResolve`, it will be called after resolution.
+
+### Lifecycle Hooks
+
+Services can implement the following optional hooks:
+
+```go
+func (s *MyService) OnRegister() {
+    // Called after registration
+}
+
+func (s *MyService) OnResolve() {
+    // Called after resolution
+}
+```
+
+### Method Invocation
+
+Invoke a method on a service, with automatic resolution of missing arguments:
+
+```go
+result, err := container.Call(myService, "DoSomething", arg1, arg2)
+```
+
+### Automatic Dependency Injection
+
+If a struct has a `New` or `New<ServiceName>` method, it is used as a factory. Otherwise, all fields (including unexported) are auto-injected:
+
+```go
+// With New method
+func (s *MyService) New(dep1 *Dep1, dep2 *Dep2) *MyService {
+    return &MyService{dep1: dep1, dep2: dep2}
+}
+
+// With New<ServiceName> method
+func (l *Logger) NewLogger(cfg *Config) *Logger {
+    return &Logger{config: cfg}
+}
+
+// Without New/New<ServiceName> method
+// Dependencies are injected automatically
+```
+
+### Reflection Caching
+
+The container caches type lookups for performance, ensuring efficient resolution even in large applications.
+
+### Unexported Field Injection
+
+Unexported fields are injected using Go's `unsafe` package. This is powerful but should be used with caution.
+
+## Error Handling
+
+All errors are returned as custom Goose error types, providing clear diagnostics for invalid registration, resolution, or constructor issues.
+
+## Extensibility
+
+The container is designed for extensibility. You can add support for transient/request-scoped services, custom hooks, or additional features as needed.
+
+## Example
+
+```go
 type MyService struct {
-    Dependency1 *Dependency1
-    Dependency2 *Dependency2
-}
-func (s *MyService) New() *MyService {
-    return &MyService{
-        Dependency1: NewDependency1(),
-        Dependency2: NewDependency2(),
-    }
-}
-```
-
-- **Register a Function Factory**:
-  - A function can be registered as a factory for a service. The return value of the function is used as the service instance.
-
-```go
-container.register(func() *MyService {
-    return &MyService{
-        Dependency1: NewDependency1(),
-        Dependency2: NewDependency2(),
-    }
-})
-```
-
-- **Register Interfaces to Implementations**:
-  - Interfaces can be mapped to their concrete implementations, allowing for flexible dependency injection.
-
-```go
-container.registerInterface((*MyInterface)(nil), &MyImplementation{})
-```
-
-- **Request-Scoped Services**:
-  - Services with parameters like `*request.Request` are automatically registered as request-scoped services, meaning a new instance is created for each request.
-
-```go
-type MyService struct {
-    *request.Request
+    dep1 *Dep1
+    dep2 *Dep2
 }
 
-// OR
-type MyService struct {
+// Register interface to implementation
+container.Register(func() MyInterface {
+    return &MyImplementation{}
+}, "", true)
+
+myInterface := new(MyInterface)
+err := container.Resolve(&myInterface, "")
+
+func (s *MyService) OnRegister() {
+    // Custom registration logic
 }
-container.registerRequestScoped(&MyService{})
+
+func (s *MyService) OnResolve() {
+    // Custom resolution logic
+}
 ```
-
-### 2. **Service Lifecycle Hooks**
-
-Services can implement optional lifecycle hooks to handle specific events:
-
-- **OnRegister**:
-
-  - Called when the service is registered with the container.
-
-- **OnUnregister**:
-
-  - Called when the service is unregistered from the container.
-
-- **OnResolve**:
-
-  - Called when the service is resolve from the container.
-
-- **HasNew**:
-  - Not really a hook. If the service implements this interface, the 'New' it will be used as a factory method to create a new instance of the service. Embedded dependencies are not auto-resolved in this case.
-
-### 3. **Singletons and Scopes**
-
-- All registered services are **singletons** by default.
-- Services can also be registered as **request-scoped**, ensuring a new instance is created for each request.
-- Services can also be registered as **fresh**, ensuring a new instance is created for each resolution.
-
-## Core Methods
-
-The container exposes the following core methods:
-
-### 1. **register()**
-
-Registers a service, function factory, or interface-to-implementation mapping with the container.
-
-Example:
-
-```go
-container.register(MyService{})
-container.register(func() MyService {
-    return NewMyService()
-})
-container.registerInterface((*MyInterface)(nil), MyImplementation{})
-```
-
-### 2. **resolve()**
-
-Resolves a service or dependency from the container.
-
-Example:
-
-```go
-service := container.resolve(MyService{})
-```
-
-### 3. **call()**
-
-Invokes a method on a type, resolving any missing arguments from the container.
-
-- Accepts a type, method name, and optional arguments.
-- Any method argument not provided in the arguments list is resolved from the container.
-- The method is invoked with the combined arguments, and the result is returned.
-
-Example:
-
-```go
-result := container.call(MyService{}, "DoSomething", arg1, arg2)
-```
-
-## Global Capabilities
-
-The Goose service container is designed to handle all Go primitives, including:
-
-- Interfaces
-- Structs
-- Functions
-- Other Goose primitives (e.g., requests, responses, middlewares, controllers)
-
-This ensures the container can be used across the framework to manage dependencies seamlessly.
 
 ## Notes
 
-- Services are **singletons** by default unless explicitly registered as request-scoped.
-- Services with `*request.Request` or `*response.Response` parameters are automatically registered as **request-scoped**.
-- The container ensures minimal configuration and automatic resolution of dependencies, reducing boilerplate code for developers.
+- All services are singletons by default.
+- When registering a struct, the container will look for both `New` and `New<ServiceName>` methods (e.g., `NewLogger` for a `Logger` service) and use them as constructors if present.
+- Unexported field injection uses `unsafe` and may break in future Go versions.
+- Lifecycle hooks are optional and provide advanced customization.
+- Reflection caching is automatic and requires no configuration.
+- Factory functions returning interfaces are registered under the interface type, enabling interface-to-implementation mapping.
 
 ## Summary
 
-The Goose service container is a powerful and flexible tool for managing dependencies and services within the framework. By adhering to its principles of minimal configuration, automatic resolution, and global accessibility, developers can focus on building robust applications without worrying about dependency management.
+The Goose service container is a powerful, flexible, and production-ready solution for dependency management in Go. It provides automatic injection, lifecycle hooks, interface binding, and high performance for modern applications.
