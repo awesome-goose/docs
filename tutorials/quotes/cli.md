@@ -123,7 +123,7 @@ import (
 func Up() error {
     // Code to seed the users table with initial data
     return seed.Create("users", func(s seed.Seeder) {
-        s.Create("users", map[string]interface{}{
+        s.Create("users", map[string]any{
             "name":  "John Doe",
             "email": "
 ```

@@ -207,14 +207,14 @@ func (u *User) TableName() string {
 }
 
 // in services.controller, you can use the model like this
-models.User{
+user := models.User{
     Name:  "John Doe",
     Email: "i@i.com",
 }
 
-models.User.New(&User{})
-models.User.Save()
-models.User.Save()
+user.New(&User{})
+user.Save()
+user.Save()
 ```
 
 ##### DTOs
