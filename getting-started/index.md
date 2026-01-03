@@ -132,7 +132,7 @@ package controllers
 
 import (
     "github.com/awesome-goose/controller"
-    "github.com/awesome-goose/contracts"
+    "github.com/awesome-goose/types"
 )
 
 type UserController struct {
@@ -145,7 +145,7 @@ func NewUserController(controller *controller.Controller) *UserController {
     }
 }
 
-func (c *UserController) Create(ctx controller.Context) contracts.Output {
+func (c *UserController) Create(ctx controller.Context) types.Output {
     var userDTO dtos.UserDTO
     if err := ctx.Bind(&userDTO); err != nil {
         return errors.New("Failed to create user")
@@ -172,7 +172,7 @@ Routing in Goose is handled through the `routes` directory of your module. You c
 package app
 
 import (
-    "github.com/awesome-goose/contracts"
+    "github.com/awesome-goose/types"
 )
 
 type Router struct {
@@ -185,16 +185,12 @@ func NewRouter(userController *UserController) *Router {
     }
 }
 
-func (r *Router) Routes() (contracts.Routes, error) {
-    return contracts.Routes{
+func (r *Router) Routes() (types.Routes, error) {
+    return types.Routes{
         {
-            Validators:  contracts.Validators{},
-            Middlewares: contracts.Middlewares{},
-
+            Middlewares: types.Middlewares{},
             Path:  "users",
-            Alias: []string{"people", "customers"},
-
-            Children: contracts.Routes{
+            Children: types.Routes{
                 {Path: "create", Handler: r.userController.Create},
 
                 // Or
@@ -213,11 +209,11 @@ Services are generic and can be used for various purposes, such as making reques
 
 ```go
 import (
-    "github.com/awesome-goose/contracts"
+    "github.com/awesome-goose/types"
 )
 
 type Service struct {
-    contracts.Service
+    types.Service
 }
 
 func NewService() *Service {

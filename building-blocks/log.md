@@ -56,7 +56,7 @@ package log
 // - platform does *log.Log.Add(channel, loggers)
 // - services/other consumers can use:
 // - - *log.Log.Use
-// - - *log.Contracts.ErrorLogLevel
+// - - *log.types.ErrorLogLevel
 // - - *log.Log.\*\*\*\*
 //
 // Advance:

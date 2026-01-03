@@ -39,7 +39,7 @@ func (m *MyModule) NewMyModule() *MyModule {
 }
 
 func (m *MyModule) Imports() {
-    return []contracts.Module{
+    return []types.Module{
         ...
         database.Module{},
         ...
