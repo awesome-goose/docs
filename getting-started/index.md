@@ -132,7 +132,7 @@ package controllers
 
 import (
     "github.com/awesome-goose/controller"
-    "github.com/awesome-goose/types"
+    "github.com/awesome-goose/platform/types"
 )
 
 type UserController struct {
@@ -172,7 +172,7 @@ Routing in Goose is handled through the `routes` directory of your module. You c
 package app
 
 import (
-    "github.com/awesome-goose/types"
+    "github.com/awesome-goose/platform/types"
 )
 
 type Router struct {
@@ -209,7 +209,7 @@ Services are generic and can be used for various purposes, such as making reques
 
 ```go
 import (
-    "github.com/awesome-goose/types"
+    "github.com/awesome-goose/platform/types"
 )
 
 type Service struct {
