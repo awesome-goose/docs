@@ -1,5 +1,0 @@
-# Goose
-
-## Docs
-
-### Contribution

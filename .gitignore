@@ -46,3 +46,5 @@ vendor/
 # Go workspace
 go.work
 go.work.sum
+# Build output
+dist/goose-docs
