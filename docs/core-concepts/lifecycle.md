@@ -66,9 +66,11 @@ Understanding the Goose application lifecycle helps you hook into key stages of 
 
 ## Lifecycle Hooks
 
-### OnBoot Hook
+### Boot Hook
 
-Execute code after the application is fully initialized but before it starts running:
+Execute code after the application is fully initialized but before it starts running.
+
+Implement the `types.Bootable` interface:
 
 ```go
 type MyService struct {
@@ -76,30 +78,51 @@ type MyService struct {
     cache *cache.Cache `inject:""`
 }
 
-// OnBoot is called during the boot phase
-func (s *MyService) OnBoot(kernel types.Kernel) error {
+// Boot is called during the boot phase
+func (s *MyService) Boot(k types.Kernel) error {
     // Warm up cache
-    s.cache.Set("status", "ready", 0)
+    // ...
 
     // Verify database connection
-    if err := s.db.Ping(); err != nil {
-        return err
-    }
+    // ...
 
     return nil
 }
 ```
 
-### OnShutdown Hook
+### Shutdown Hook
 
-Execute cleanup code when the application shuts down:
+Execute cleanup code when the application shuts down.
+
+Implement the `types.Shutdownable` interface:
 
 ```go
-func (s *MyService) OnShutdown() error {
+func (s *MyService) Shutdown(k types.Kernel) error {
     // Close connections
     // Flush buffers
     // Save state
     return nil
+}
+```
+
+### Hook Interfaces
+
+```go
+// types/hooks.go
+
+// Configurable is called during module registration, before declarations are created.
+type Configurable interface {
+    Configure(c Container) error
+}
+
+// Bootable is implemented by services that need initialization after setup
+type Bootable interface {
+    Boot(k Kernel) error
+}
+
+// Shutdownable is implemented by services that need cleanup on shutdown
+type Shutdownable interface {
+    Shutdown(k Kernel) error
 }
 ```
 
@@ -138,8 +161,8 @@ func setupLogging(container types.Container) error {
         log.AppLogChannel("app"),
         log.NewLogger(
             []types.Modifier{},
-            log.NewLineFormatter(),
-            log.NewConsoleProcessor(),
+            formatters.NewLine(),
+            processors.NewConsole(),
         ),
     )
     container.Register(func() types.Log {

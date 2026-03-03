@@ -136,12 +136,13 @@ Welcome to the official documentation for **Goose** — an awesome, all-in-one, 
 
 ### 📘 Tutorials
 
-| Document                                     | Description           |
-| -------------------------------------------- | --------------------- |
-| [Tutorials Index](tutorials/index.md)        | All tutorials         |
-| [Building a REST API](tutorials/rest-api.md) | Complete API tutorial |
-| [Building a Web App](tutorials/web-app.md)   | Complete web tutorial |
-| [Building a CLI Tool](tutorials/cli-tool.md) | Complete CLI tutorial |
+| Document                                        | Description               |
+| ----------------------------------------------- | ------------------------- |
+| [Tutorials Index](tutorials/index.md)           | All tutorials             |
+| [Sample Applications](tutorials/sample-apps.md) | Complete working examples |
+| [Building a REST API](tutorials/rest-api.md)    | Complete API tutorial     |
+| [Building a Web App](tutorials/web-app.md)      | Complete web tutorial     |
+| [Building a CLI Tool](tutorials/cli-tool.md)    | Complete CLI tutorial     |
 
 ---
 
@@ -161,6 +162,8 @@ go run main.go
 ```
 
 Your API is now running at `http://localhost:8080`! 🎉
+
+> 💡 **Looking for complete examples?** Check out the [Sample Applications](tutorials/sample-apps.md) for working reference implementations of API, Web, CLI, and Multi-platform apps.
 
 ---
 

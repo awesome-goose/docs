@@ -20,13 +20,17 @@ func (c *UserController) Index(ctx types.Context) any {
 }
 
 func (c *UserController) Show(ctx types.Context) any {
-    id := ctx.Param("id")
+    id := ctx.Request().Params()["id"]
     return c.service.GetUser(id)
 }
 
 func (c *UserController) Create(ctx types.Context) any {
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": err.Error()}
+    }
     var dto CreateUserDTO
-    if err := ctx.Bind(&dto); err != nil {
+    if err := json.Unmarshal(body, &dto); err != nil {
         return map[string]string{"error": err.Error()}
     }
     return c.service.CreateUser(dto)
@@ -70,48 +74,56 @@ func (c *ProductController) Index(ctx types.Context) any {
 
 // Show single resource
 func (c *ProductController) Show(ctx types.Context) any {
-    id := ctx.Param("id")
+    id := ctx.Request().Params()["id"]
     product, err := c.service.GetByID(id)
     if err != nil {
-        return ctx.Error(404, "Product not found")
+        return map[string]string{"error": "Product not found"}
     }
     return product
 }
 
 // Create resource
 func (c *ProductController) Create(ctx types.Context) any {
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": err.Error()}
+    }
     var dto CreateProductDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, err.Error())
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]string{"error": err.Error()}
     }
 
     product, err := c.service.Create(dto)
     if err != nil {
-        return ctx.Error(500, err.Error())
+        return map[string]string{"error": err.Error()}
     }
     return product
 }
 
 // Update resource
 func (c *ProductController) Update(ctx types.Context) any {
-    id := ctx.Param("id")
+    id := ctx.Request().Params()["id"]
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": err.Error()}
+    }
     var dto UpdateProductDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, err.Error())
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]string{"error": err.Error()}
     }
 
     product, err := c.service.Update(id, dto)
     if err != nil {
-        return ctx.Error(500, err.Error())
+        return map[string]string{"error": err.Error()}
     }
     return product
 }
 
 // Delete resource
 func (c *ProductController) Delete(ctx types.Context) any {
-    id := ctx.Param("id")
+    id := ctx.Request().Params()["id"]
     if err := c.service.Delete(id); err != nil {
-        return ctx.Error(500, err.Error())
+        return map[string]string{"error": err.Error()}
     }
     return map[string]bool{"deleted": true}
 }
@@ -137,27 +149,31 @@ The context provides access to all request data:
 
 ```go
 func (c *UserController) Handle(ctx types.Context) any {
+    req := ctx.Request()
+    resp := ctx.Response()
+
     // Path parameters
-    id := ctx.Param("id")
+    id := req.Params()["id"]
 
     // Query parameters
-    page := ctx.Query("page")
+    page := req.Queries()["page"]
 
-    // Request body binding
+    // Request body
+    body, err := req.Body()
+    if err != nil {
+        return map[string]string{"error": "Failed to read body"}
+    }
     var dto MyDTO
-    ctx.Bind(&dto)
+    json.Unmarshal(body, &dto)
 
     // Headers
-    auth := ctx.Header("Authorization")
-
-    // Cookies
-    token := ctx.Cookie("session")
+    auth := req.Headers()["Authorization"]
 
     // Set response headers
-    ctx.SetHeader("X-Custom", "value")
+    resp.SetHeader("X-Custom", "value")
 
-    // Set status code
-    ctx.SetStatus(201)
+    // Store context values
+    ctx.SetValue("user", user)
 
     return result
 }
@@ -178,12 +194,12 @@ func (c *ApiController) GetUser(ctx types.Context) any {
 ### HTML Response (Web)
 
 ```go
-// Render a template
+// For web platforms, return data and let the serializer handle rendering
 func (c *WebController) GetUser(ctx types.Context) any {
-    user := c.service.GetUser(ctx.Param("id"))
-    return ctx.Render("users/show.html", map[string]any{
+    user := c.service.GetUser(ctx.Request().Params()["id"])
+    return map[string]any{
         "user": user,
-    })
+    }
 }
 ```
 
@@ -192,7 +208,8 @@ func (c *WebController) GetUser(ctx types.Context) any {
 ```go
 func (c *WebController) CreateUser(ctx types.Context) any {
     // Process...
-    return ctx.Redirect("/users")
+    // For redirects, return data that your serializer handles
+    return map[string]string{"redirect": "/users"}
 }
 ```
 
@@ -200,8 +217,11 @@ func (c *WebController) CreateUser(ctx types.Context) any {
 
 ```go
 func (c *Controller) Handle(ctx types.Context) any {
-    // Return error with status code
-    return ctx.Error(404, "Resource not found")
+    // Return error as a map or struct
+    return map[string]any{
+        "error": "Resource not found",
+        "status": 404,
+    }
 }
 ```
 
@@ -209,8 +229,11 @@ func (c *Controller) Handle(ctx types.Context) any {
 
 ```go
 func (c *Controller) Create(ctx types.Context) any {
-    ctx.SetStatus(201)  // Created
-    return newResource
+    // Return with status information for serialization
+    return map[string]any{
+        "data": newResource,
+        "_status": 201,  // Handle in your serializer
+    }
 }
 ```
 
@@ -275,23 +298,25 @@ func (c *ProductController) Index(ctx types.Context) any {
 }
 
 func (c *ProductController) Show(ctx types.Context) any {
-    return c.service.GetByID(ctx.Param("id"))
+    return c.service.GetByID(ctx.Request().Params()["id"])
 }
 
 func (c *ProductController) Create(ctx types.Context) any {
+    body, _ := ctx.Request().Body()
     var dto CreateProductDTO
-    ctx.Bind(&dto)
+    json.Unmarshal(body, &dto)
     return c.service.Create(dto)
 }
 
 func (c *ProductController) Update(ctx types.Context) any {
+    body, _ := ctx.Request().Body()
     var dto UpdateProductDTO
-    ctx.Bind(&dto)
-    return c.service.Update(ctx.Param("id"), dto)
+    json.Unmarshal(body, &dto)
+    return c.service.Update(ctx.Request().Params()["id"], dto)
 }
 
 func (c *ProductController) Delete(ctx types.Context) any {
-    return c.service.Delete(ctx.Param("id"))
+    return c.service.Delete(ctx.Request().Params()["id"])
 }
 
 func (c *ProductController) Routes() types.Routes {
@@ -314,19 +339,21 @@ Controllers should only handle HTTP concerns:
 ```go
 // ✅ Good: Thin controller
 func (c *UserController) Create(ctx types.Context) any {
+    body, _ := ctx.Request().Body()
     var dto CreateUserDTO
-    ctx.Bind(&dto)
+    json.Unmarshal(body, &dto)
     return c.service.CreateUser(dto)  // Delegate to service
 }
 
 // ❌ Bad: Fat controller with business logic
 func (c *UserController) Create(ctx types.Context) any {
+    body, _ := ctx.Request().Body()
     var dto CreateUserDTO
-    ctx.Bind(&dto)
+    json.Unmarshal(body, &dto)
 
     // Don't do business logic here
     if dto.Email == "" {
-        return ctx.Error(400, "Email required")
+        return map[string]string{"error": "Email required"}
     }
     user := &User{Name: dto.Name, Email: dto.Email}
     c.db.Create(user)  // Direct DB access
@@ -346,9 +373,13 @@ type CreateUserDTO struct {
 }
 
 func (c *UserController) Create(ctx types.Context) any {
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": err.Error()}
+    }
     var dto CreateUserDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, err.Error())
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]string{"error": err.Error()}
     }
     return c.service.CreateUser(dto)
 }
@@ -358,12 +389,12 @@ func (c *UserController) Create(ctx types.Context) any {
 
 ```go
 func (c *UserController) Show(ctx types.Context) any {
-    user, err := c.service.GetByID(ctx.Param("id"))
+    user, err := c.service.GetByID(ctx.Request().Params()["id"])
     if err != nil {
         if errors.Is(err, ErrNotFound) {
-            return ctx.Error(404, "User not found")
+            return map[string]any{"error": "User not found", "status": 404}
         }
-        return ctx.Error(500, "Internal error")
+        return map[string]any{"error": "Internal error", "status": 500}
     }
     return user
 }

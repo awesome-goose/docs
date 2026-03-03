@@ -4,12 +4,11 @@ Improve performance with the Goose caching module.
 
 ## Overview
 
-The Cache module provides a unified interface for caching with support for:
+The Cache module provides a SQL-backed caching interface with support for:
 
-- In-memory caching
-- Redis caching
 - TTL (Time-To-Live) support
-- Cache tags for invalidation
+- Cache groups for organization
+- Automatic cleanup of expired entries
 
 ## Quick Start
 
@@ -18,10 +17,9 @@ import "github.com/awesome-goose/goose/modules/cache"
 
 // Configure cache module
 cacheModule := cache.NewModule(
-    cache.WithDriver("redis"),
-    cache.WithHost("localhost"),
-    cache.WithPort(6379),
+    cache.WithGroup("app"),
     cache.WithDefaultTTL(time.Hour),
+    cache.WithCleanupInterval(10 * time.Minute),
 )
 
 // Include in application
@@ -32,28 +30,30 @@ stop, err := goose.Start(goose.API(platform, module, []types.Module{
 
 ## Configuration
 
-### Redis Cache
+### Available Options
 
 ```go
 cacheModule := cache.NewModule(
-    cache.WithDriver("redis"),
-    cache.WithHost(env.String("REDIS_HOST", "localhost")),
-    cache.WithPort(env.Int("REDIS_PORT", 6379)),
-    cache.WithPassword(env.String("REDIS_PASSWORD", "")),
-    cache.WithDB(env.Int("REDIS_DB", 0)),
+    // Group/namespace for cache entries
+    cache.WithGroup(env.String("CACHE_GROUP", "default")),
+    // Default TTL for entries (default: 5 minutes)
     cache.WithDefaultTTL(time.Hour),
-    cache.WithPrefix("myapp:cache:"),
+    // How often to clean up expired entries (0 = no cleanup)
+    cache.WithCleanupInterval(10 * time.Minute),
 )
 ```
 
-### In-Memory Cache
+### Configuration Struct
 
 ```go
-cacheModule := cache.NewModule(
-    cache.WithDriver("memory"),
-    cache.WithDefaultTTL(time.Hour),
-    cache.WithMaxSize(1000), // Maximum entries
-)
+type Config struct {
+    // Group is the namespace for cache entries
+    Group string
+    // DefaultTTL is the default time-to-live for cache entries
+    DefaultTTL time.Duration
+    // CleanupInterval is how often expired entries are cleaned up
+    CleanupInterval time.Duration
+}
 ```
 
 ## Using the Cache

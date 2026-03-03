@@ -46,14 +46,15 @@ func (c *UserController) Stats(ctx types.Context) any {
 
 ## HTML Responses (Web)
 
-For web platforms, render HTML templates:
+For web platforms, return data that your serializer processes:
 
 ```go
 func (c *WebController) Home(ctx types.Context) any {
-    return ctx.Render("pages/home.html", map[string]any{
+    return map[string]any{
+        "_template": "pages/home.html",
         "title": "Welcome",
         "user": currentUser,
-    })
+    }
 }
 ```
 
@@ -63,65 +64,85 @@ Pass data to templates:
 
 ```go
 func (c *WebController) UserProfile(ctx types.Context) any {
-    user := c.userService.GetByID(ctx.Param("id"))
+    user := c.userService.GetByID(ctx.Request().Params()["id"])
     posts := c.postService.GetByUser(user.ID)
 
-    return ctx.Render("users/profile.html", map[string]any{
+    return map[string]any{
+        "_template": "users/profile.html",
         "user":  user,
         "posts": posts,
         "stats": map[string]int{
             "followers": 1000,
             "following": 500,
         },
-    })
+    }
 }
 ```
 
 ## Redirects
 
-Redirect to another URL:
+Return redirect information that your platform/serializer handles:
 
 ```go
 // Simple redirect
 func (c *WebController) Logout(ctx types.Context) any {
     c.authService.Logout(ctx)
-    return ctx.Redirect("/")
+    return map[string]any{
+        "_redirect": "/",
+    }
 }
 
-// Redirect with status code
+// Redirect with status code (301 permanent)
 func (c *WebController) OldPage(ctx types.Context) any {
-    return ctx.RedirectPermanent("/new-page")  // 301
+    return map[string]any{
+        "_redirect": "/new-page",
+        "_status": 301,
+    }
 }
 
-// Redirect to named route
+// Redirect after create
 func (c *WebController) AfterCreate(ctx types.Context) any {
-    return ctx.Redirect("/users/" + user.ID)
+    return map[string]any{
+        "_redirect": "/users/" + user.ID,
+    }
 }
 ```
 
 ## Error Responses
 
-Return error responses:
+Return error responses as structured data:
 
 ```go
 // Simple error
 func (c *UserController) Show(ctx types.Context) any {
-    user, err := c.service.GetByID(ctx.Param("id"))
+    user, err := c.service.GetByID(ctx.Request().Params()["id"])
     if err != nil {
-        return ctx.Error(404, "User not found")
+        return map[string]any{
+            "error": "User not found",
+            "_status": 404,
+        }
     }
     return user
 }
 
 // Structured error
 func (c *UserController) Create(ctx types.Context) any {
-    var dto CreateUserDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, map[string]any{
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]any{
             "error": "validation_failed",
             "message": "Invalid request body",
             "details": err.Error(),
-        })
+            "_status": 400,
+        }
+    }
+    var dto CreateUserDTO
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]any{
+            "error": "validation_failed",
+            "message": "Invalid JSON",
+            "_status": 400,
+        }
     }
     return c.service.CreateUser(dto)
 }
@@ -131,15 +152,22 @@ func (c *UserController) Create(ctx types.Context) any {
 
 ### Setting Status Codes
 
+Include status in your response for your serializer to handle:
+
 ```go
 func (c *UserController) Create(ctx types.Context) any {
     user, err := c.service.CreateUser(dto)
     if err != nil {
-        return ctx.Error(500, "Failed to create user")
+        return map[string]any{
+            "error": "Failed to create user",
+            "_status": 500,
+        }
     }
 
-    ctx.SetStatus(201)  // Created
-    return user
+    return map[string]any{
+        "data": user,
+        "_status": 201,  // Created
+    }
 }
 ```
 
@@ -159,19 +187,27 @@ func (c *UserController) Create(ctx types.Context) any {
 
 ## Headers
 
-Set response headers:
+Set response headers using the Response interface:
 
 ```go
 func (c *ApiController) Handle(ctx types.Context) any {
+    resp := ctx.Response()
+
     // Single header
-    ctx.SetHeader("X-Custom-Header", "value")
+    resp.SetHeader("X-Custom-Header", "value")
 
     // Cache headers
-    ctx.SetHeader("Cache-Control", "max-age=3600")
-    ctx.SetHeader("ETag", "abc123")
+    resp.SetHeader("Cache-Control", "max-age=3600")
+    resp.SetHeader("ETag", "abc123")
 
     // CORS headers
-    ctx.SetHeader("Access-Control-Allow-Origin", "*")
+    resp.SetHeader("Access-Control-Allow-Origin", "*")
+
+    // Multiple headers at once
+    resp.SetHeaders(map[string]string{
+        "X-Custom-1": "value1",
+        "X-Custom-2": "value2",
+    })
 
     return data
 }
@@ -179,24 +215,26 @@ func (c *ApiController) Handle(ctx types.Context) any {
 
 ## Cookies
 
-Set cookies in the response:
+Set cookies using the raw response (platform-specific):
 
 ```go
+import "net/http"
+
 func (c *AuthController) Login(ctx types.Context) any {
     token := c.authService.CreateToken(user)
 
-    // Simple cookie
-    ctx.SetCookie("session", token)
-
-    // Cookie with options
-    ctx.SetCookie("session", token, &CookieOptions{
-        MaxAge:   3600,        // 1 hour
-        Path:     "/",
-        Domain:   "example.com",
-        Secure:   true,        // HTTPS only
-        HttpOnly: true,        // No JavaScript access
-        SameSite: "Strict",
-    })
+    // For HTTP platforms, access raw response writer
+    raw := ctx.Response().Raw()
+    if w, ok := raw.(http.ResponseWriter); ok {
+        http.SetCookie(w, &http.Cookie{
+            Name:     "session",
+            Value:    token,
+            MaxAge:   3600,
+            Path:     "/",
+            Secure:   true,
+            HttpOnly: true,
+        })
+    }
 
     return map[string]string{"status": "logged in"}
 }
@@ -204,33 +242,58 @@ func (c *AuthController) Login(ctx types.Context) any {
 
 ## File Downloads
 
-Send files as downloads:
+Send files as downloads using raw response:
 
 ```go
+import (
+    "net/http"
+    "os"
+)
+
 func (c *FileController) Download(ctx types.Context) any {
-    fileID := ctx.Param("id")
+    fileID := ctx.Request().Params()["id"]
     file := c.fileService.GetFile(fileID)
 
-    return ctx.Download(file.Path, file.Name)
+    // Set download headers
+    resp := ctx.Response()
+    resp.SetHeader("Content-Disposition", "attachment; filename="+file.Name)
+    resp.SetHeader("Content-Type", "application/octet-stream")
+
+    // Read and return file content
+    content, err := os.ReadFile(file.Path)
+    if err != nil {
+        return map[string]string{"error": "File not found"}
+    }
+
+    return content
 }
 ```
 
 ## Streaming Responses
 
-For large data, use streaming:
+For large data, use raw response for streaming:
 
 ```go
-func (c *ExportController) ExportCSV(ctx types.Context) any {
-    ctx.SetHeader("Content-Type", "text/csv")
-    ctx.SetHeader("Content-Disposition", "attachment; filename=export.csv")
+import (
+    "fmt"
+    "net/http"
+)
 
-    return ctx.Stream(func(w io.Writer) error {
+func (c *ExportController) ExportCSV(ctx types.Context) any {
+    resp := ctx.Response()
+    resp.SetHeader("Content-Type", "text/csv")
+    resp.SetHeader("Content-Disposition", "attachment; filename=export.csv")
+
+    // For HTTP platforms, stream directly to response writer
+    raw := resp.Raw()
+    if w, ok := raw.(http.ResponseWriter); ok {
         users := c.userService.GetAll()
         for _, user := range users {
             fmt.Fprintf(w, "%s,%s\n", user.ID, user.Name)
         }
-        return nil
-    })
+    }
+
+    return nil
 }
 ```
 
@@ -269,8 +332,15 @@ func Paginated(data any, page, limit, total int) map[string]any {
 }
 
 func (c *UserController) List(ctx types.Context) any {
-    page := ctx.QueryInt("page", 1)
-    limit := ctx.QueryInt("limit", 10)
+    queries := ctx.Request().Queries()
+    page, _ := strconv.Atoi(queries["page"])
+    if page == 0 {
+        page = 1
+    }
+    limit, _ := strconv.Atoi(queries["limit"])
+    if limit == 0 {
+        limit = 10
+    }
 
     users, total := c.service.Paginate(page, limit)
     return Paginated(users, page, limit, total)
@@ -319,7 +389,7 @@ type APIResponse struct {
 }
 
 func (c *UserController) Show(ctx types.Context) any {
-    user, err := c.service.GetByID(ctx.Param("id"))
+    user, err := c.service.GetByID(ctx.Request().Params()["id"])
     if err != nil {
         return APIResponse{Success: false, Error: err.Error()}
     }
@@ -334,13 +404,21 @@ func (c *UserController) Create(ctx types.Context) any {
     user, err := c.service.Create(dto)
     if err != nil {
         if errors.Is(err, ErrDuplicate) {
-            return ctx.Error(409, "User already exists")  // Conflict
+            return map[string]any{
+                "error": "User already exists",
+                "_status": 409,  // Conflict
+            }
         }
-        return ctx.Error(500, "Failed to create user")
+        return map[string]any{
+            "error": "Failed to create user",
+            "_status": 500,
+        }
     }
 
-    ctx.SetStatus(201)  // Created
-    return user
+    return map[string]any{
+        "data": user,
+        "_status": 201,  // Created
+    }
 }
 ```
 

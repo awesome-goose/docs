@@ -4,7 +4,7 @@ Process background jobs asynchronously with the Goose queues module.
 
 ## Overview
 
-The Queues module enables background job processing for:
+The Queues module enables SQL-backed background job processing for:
 
 - Sending emails
 - Processing uploads
@@ -19,16 +19,51 @@ import "github.com/awesome-goose/goose/modules/queues"
 
 // Configure queues module
 queuesModule := queues.NewModule(
-    queues.WithDriver("redis"),
-    queues.WithHost("localhost"),
-    queues.WithPort(6379),
-    queues.WithQueues("default", "emails", "exports"),
+    queues.WithQueue("default"),
+    queues.WithPollInterval(5 * time.Second),
+    queues.WithDefaultRetryLimit(3),
 )
 
 // Include in application
 stop, err := goose.Start(goose.API(platform, module, []types.Module{
     queuesModule,
 }))
+```
+
+## Configuration
+
+### Available Options
+
+```go
+queuesModule := queues.NewModule(
+    // Default queue name for jobs
+    queues.WithQueue("default"),
+    // Number of retries for failed jobs
+    queues.WithDefaultRetryLimit(3),
+    // Delay between retries (milliseconds)
+    queues.WithDefaultRetryDelay(1000),
+    // How often workers poll for new jobs
+    queues.WithPollInterval(5 * time.Second),
+    // How often expired/completed jobs are cleaned up
+    queues.WithCleanupInterval(time.Hour),
+    // How long to keep completed/failed jobs
+    queues.WithRetentionPeriod(7 * 24 * time.Hour),
+)
+```
+
+### Configuration Struct
+
+```go
+type Config struct {
+    Queue                  string        // Default queue name
+    DefaultRetryLimit      int           // Default retry count
+    DefaultRetryDelay      int           // Delay between retries (ms)
+    PollInterval           time.Duration // Job polling interval
+    CleanupInterval        time.Duration // Cleanup frequency
+    RetentionPeriod        time.Duration // Keep completed jobs
+    StaleJobTimeout        time.Duration // Recovery timeout
+    EnableStaleJobRecovery bool          // Auto-recover stale jobs
+}
 ```
 
 ## Defining Jobs

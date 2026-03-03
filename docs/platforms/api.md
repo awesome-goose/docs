@@ -41,10 +41,26 @@ func main() {
 platform := api.NewPlatform(
     api.WithHost("0.0.0.0"),           // Listen address
     api.WithPort(8080),                 // Port
-    api.WithPrefix("/api/v1"),          // URL prefix
-    api.WithReadTimeout(30*time.Second),
-    api.WithWriteTimeout(30*time.Second),
+    api.WithTimeout(30),                // Request timeout (seconds)
+    api.WithName("My API"),             // API name
+    api.WithVersion("1.0.0"),           // API version
+    api.WithAuthor("Your Name"),        // Author
+    api.WithDescription("API description"),
 )
+```
+
+### Available Options
+
+```go
+type Config struct {
+    Name        string  // API name
+    Version     string  // API version
+    Author      string  // Author
+    Description string  // Description
+    Host        string  // Listen address
+    Port        int     // Port
+    Timeout     int     // Request timeout
+}
 ```
 
 ### Environment Configuration
@@ -53,7 +69,7 @@ platform := api.NewPlatform(
 platform := api.NewPlatform(
     api.WithHost(env.String("HOST", "localhost")),
     api.WithPort(env.Int("PORT", 8080)),
-    api.WithPrefix(env.String("API_PREFIX", "/api")),
+    api.WithTimeout(env.Int("TIMEOUT", 30)),
 )
 ```
 
@@ -68,11 +84,12 @@ func (c *Controller) Index(ctx types.Context) any {
 }
 
 func (c *Controller) Show(ctx types.Context) any {
-    user := c.service.GetByID(ctx.Param("id"))
+    user := c.service.GetByID(ctx.Request().Params()["id"])
     if user == nil {
-        return ctx.Status(404).JSON(map[string]string{
+        return map[string]any{
             "error": "User not found",
-        })
+            "_status": 404,
+        }
     }
     return user
 }
@@ -84,11 +101,15 @@ func (c *Controller) Show(ctx types.Context) any {
 func (c *Controller) Create(ctx types.Context) any {
     user, err := c.service.Create(dto)
     if err != nil {
-        return ctx.Status(400).JSON(map[string]string{
+        return map[string]any{
             "error": err.Error(),
-        })
+            "_status": 400,
+        }
     }
-    return ctx.Status(201).JSON(user)
+    return map[string]any{
+        "data": user,
+        "_status": 201,
+    }
 }
 ```
 
@@ -96,8 +117,10 @@ func (c *Controller) Create(ctx types.Context) any {
 
 ```go
 func (c *Controller) Delete(ctx types.Context) any {
-    c.service.Delete(ctx.Param("id"))
-    return ctx.Status(204).Send("")
+    c.service.Delete(ctx.Request().Params()["id"])
+    return map[string]any{
+        "_status": 204,
+    }
 }
 ```
 
@@ -106,17 +129,27 @@ func (c *Controller) Delete(ctx types.Context) any {
 ### Request Body
 
 ```go
+import "encoding/json"
+
 type CreateUserDTO struct {
     Email string `json:"email" validate:"required,email"`
     Name  string `json:"name" validate:"required"`
 }
 
 func (c *Controller) Create(ctx types.Context) any {
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]any{
+            "error": "Failed to read body",
+            "_status": 400,
+        }
+    }
     var dto CreateUserDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(map[string]string{
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]any{
             "error": "Invalid request body",
-        })
+            "_status": 400,
+        }
     }
     // Use dto...
 }
@@ -126,9 +159,10 @@ func (c *Controller) Create(ctx types.Context) any {
 
 ```go
 func (c *Controller) Index(ctx types.Context) any {
-    page := ctx.QueryInt("page", 1)
-    limit := ctx.QueryInt("limit", 10)
-    sort := ctx.Query("sort", "created_at")
+    queries := ctx.Request().Queries()
+    page := queries["page"]
+    limit := queries["limit"]
+    sort := queries["sort"]
 
     return c.service.GetPaginated(page, limit, sort)
 }
@@ -138,12 +172,20 @@ func (c *Controller) Index(ctx types.Context) any {
 
 ```go
 func (c *Controller) Show(ctx types.Context) any {
-    id := ctx.Param("id")
+    id := ctx.Request().Params()["id"]
     return c.service.GetByID(id)
 }
 ```
 
 ## Middleware
+
+Middleware implements the `types.Middleware` interface:
+
+```go
+type Middleware interface {
+    Handle(ctx Context) error
+}
+```
 
 ### Authentication
 
@@ -152,18 +194,21 @@ type AuthMiddleware struct {
     authService *AuthService `inject:""`
 }
 
-func (m *AuthMiddleware) Handle(ctx types.Context, next types.Next) any {
-    token := ctx.Header("Authorization")
+func (m *AuthMiddleware) Handle(ctx types.Context) error {
+    headers := ctx.Request().Headers()
+    token := ""
+    if auth := headers["Authorization"]; len(auth) > 0 {
+        token = auth[0]
+    }
 
     user, err := m.authService.ValidateToken(token)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Unauthorized",
-        })
+        // Return error to stop the chain
+        return err
     }
 
-    ctx.Set("user", user)
-    return next()
+    ctx.SetValue("user", user)
+    return nil  // Continue to next middleware/handler
 }
 ```
 
@@ -217,13 +262,14 @@ goose.Start(
 ```go
 type VersionMiddleware struct{}
 
-func (m *VersionMiddleware) Handle(ctx types.Context, next types.Next) any {
-    version := ctx.Header("API-Version")
-    if version == "" {
-        version = "v1"
+func (m *VersionMiddleware) Handle(ctx types.Context) error {
+    headers := ctx.Request().Headers()
+    version := "v1"
+    if v := headers["API-Version"]; len(v) > 0 {
+        version = v[0]
     }
-    ctx.Set("api_version", version)
-    return next()
+    ctx.SetValue("api_version", version)
+    return nil
 }
 ```
 
@@ -242,18 +288,23 @@ func (c *Controller) Create(ctx types.Context) any {
     user, err := c.service.Create(dto)
     if err != nil {
         if validationErr, ok := err.(*ValidationError); ok {
-            return ctx.Status(400).JSON(ErrorResponse{
-                Error:   "Validation failed",
-                Code:    "VALIDATION_ERROR",
-                Details: validationErr.Fields,
-            })
+            return map[string]any{
+                "error":   "Validation failed",
+                "code":    "VALIDATION_ERROR",
+                "details": validationErr.Fields,
+                "_status": 400,
+            }
         }
-        return ctx.Status(500).JSON(ErrorResponse{
-            Error: "Internal server error",
-            Code:  "INTERNAL_ERROR",
-        })
+        return map[string]any{
+            "error":   "Internal server error",
+            "code":    "INTERNAL_ERROR",
+            "_status": 500,
+        }
     }
-    return ctx.Status(201).JSON(user)
+    return map[string]any{
+        "data":    user,
+        "_status": 201,
+    }
 }
 ```
 
@@ -262,16 +313,19 @@ func (c *Controller) Create(ctx types.Context) any {
 ```go
 type CORSMiddleware struct{}
 
-func (m *CORSMiddleware) Handle(ctx types.Context, next types.Next) any {
-    ctx.SetHeader("Access-Control-Allow-Origin", "*")
-    ctx.SetHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-    ctx.SetHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+func (m *CORSMiddleware) Handle(ctx types.Context) error {
+    resp := ctx.Response()
+    resp.SetHeader("Access-Control-Allow-Origin", "*")
+    resp.SetHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+    resp.SetHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-    if ctx.Method() == "OPTIONS" {
-        return ctx.Status(204).Send("")
+    if ctx.Request().Method() == types.OPTIONS {
+        // Handle preflight request
+        resp.Write(types.SerialJSON, []byte(""), 204)
+        return nil
     }
 
-    return next()
+    return nil
 }
 ```
 

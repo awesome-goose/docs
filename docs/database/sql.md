@@ -11,8 +11,8 @@ import (
 
 // Configure the module
 sqlModule := sql.NewModule(
-    sql.WithDriver("sqlite"),
-    sql.WithDSN("file:app.db?cache=shared&mode=rwc"),
+    sql.WithDialect("sqlite"),
+    sql.WithName("app.db"),
 )
 
 // Include in application
@@ -27,8 +27,8 @@ stop, err := goose.Start(goose.API(platform, module, []types.Module{
 
 ```go
 sqlModule := sql.NewModule(
-    sql.WithDriver("sqlite"),
-    sql.WithDSN("file:app.db?cache=shared&mode=rwc"),
+    sql.WithDialect("sqlite"),
+    sql.WithName("app.db"),
 )
 ```
 
@@ -36,12 +36,13 @@ sqlModule := sql.NewModule(
 
 ```go
 sqlModule := sql.NewModule(
-    sql.WithDriver("postgres"),
+    sql.WithDialect("postgres"),
     sql.WithHost("localhost"),
     sql.WithPort(5432),
-    sql.WithDatabase("myapp"),
+    sql.WithName("myapp"),
     sql.WithUser("postgres"),
-    sql.WithPassword("secret"),
+    sql.WithPass("secret"),
+    sql.WithSSLMode("disable"),
 )
 ```
 
@@ -49,12 +50,12 @@ sqlModule := sql.NewModule(
 
 ```go
 sqlModule := sql.NewModule(
-    sql.WithDriver("mysql"),
+    sql.WithDialect("mysql"),
     sql.WithHost("localhost"),
     sql.WithPort(3306),
-    sql.WithDatabase("myapp"),
+    sql.WithName("myapp"),
     sql.WithUser("root"),
-    sql.WithPassword("secret"),
+    sql.WithPass("secret"),
 )
 ```
 
@@ -62,16 +63,44 @@ sqlModule := sql.NewModule(
 
 ```go
 sqlModule := sql.NewModule(
-    sql.WithDriver(env.String("DB_DRIVER", "sqlite")),
-    sql.WithDSN(env.String("DB_DSN", "file:app.db")),
+    sql.WithDialect(env.String("DB_DIALECT", "sqlite")),
+    sql.WithHost(env.String("DB_HOST", "localhost")),
+    sql.WithPort(env.Int("DB_PORT", 5432)),
+    sql.WithName(env.String("DB_NAME", "app.db")),
+    sql.WithUser(env.String("DB_USER", "")),
+    sql.WithPass(env.String("DB_PASS", "")),
 )
+```
+
+### All Available Options
+
+```go
+type Config struct {
+    Dialect    string       // "sqlite", "postgres", "mysql"
+    Host       string       // Database host
+    Port       int          // Database port
+    User       string       // Database user
+    Pass       string       // Database password
+    Name       string       // Database name
+    Sync       bool         // Auto-migrate tables
+    Log        bool         // Enable query logging
+    SSLMode    string       // SSL mode (postgres)
+    Schema     string       // Schema name (postgres)
+    TimeZone   string       // Timezone
+    Seeders    []Seeder     // Database seeders
+    Migrations []Migration  // Database migrations
+}
 ```
 
 **.env file:**
 
 ```env
-DB_DRIVER=postgres
-DB_DSN=host=localhost port=5432 user=postgres password=secret dbname=myapp sslmode=disable
+DB_DIALECT=postgres
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASS=secret
+DB_NAME=myapp
 ```
 
 ## Defining Entities

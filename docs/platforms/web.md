@@ -21,7 +21,6 @@ func main() {
     platform := web.NewPlatform(
         web.WithHost("localhost"),
         web.WithPort(3000),
-        web.WithTemplates("./templates"),
     )
 
     module := &app.AppModule{}
@@ -42,10 +41,26 @@ func main() {
 platform := web.NewPlatform(
     web.WithHost("0.0.0.0"),
     web.WithPort(3000),
-    web.WithTemplates("./templates"),
-    web.WithStatic("./public", "/static"),
-    web.WithSessionSecret("secret-key"),
+    web.WithTimeout(30),                // Request timeout (seconds)
+    web.WithName("My Web App"),
+    web.WithVersion("1.0.0"),
+    web.WithAuthor("Your Name"),
+    web.WithDescription("Web app description"),
 )
+```
+
+### Available Options
+
+```go
+type Config struct {
+    Name        string  // App name
+    Version     string  // App version
+    Author      string  // Author
+    Description string  // Description
+    Host        string  // Listen address
+    Port        int     // Port
+    Timeout     int     // Request timeout
+}
 ```
 
 ## Templates
@@ -113,12 +128,15 @@ templates/
 
 ### Basic Rendering
 
+Return data that your serializer/renderer will process:
+
 ```go
 func (c *HomeController) Index(ctx types.Context) any {
-    return ctx.View("pages/home.html", map[string]interface{}{
-        "Title":   "Home",
-        "Message": "Welcome to our site!",
-    })
+    return map[string]interface{}{
+        "_template": "pages/home.html",
+        "Title":     "Home",
+        "Message":   "Welcome to our site!",
+    }
 }
 ```
 
@@ -126,10 +144,12 @@ func (c *HomeController) Index(ctx types.Context) any {
 
 ```go
 func (c *HomeController) Index(ctx types.Context) any {
-    return ctx.View("pages/home.html", map[string]interface{}{
-        "Title": "Home",
-        "User":  c.getCurrentUser(ctx),
-    }).Layout("base/layout.html")
+    return map[string]interface{}{
+        "_template": "pages/home.html",
+        "_layout":   "base/layout.html",
+        "Title":     "Home",
+        "User":      c.getCurrentUser(ctx),
+    }
 }
 ```
 
@@ -143,22 +163,27 @@ type UserController struct {
 func (c *UserController) List(ctx types.Context) any {
     users := c.service.GetAll()
 
-    return ctx.View("pages/users/list.html", map[string]interface{}{
-        "Title": "Users",
-        "Users": users,
-    })
+    return map[string]interface{}{
+        "_template": "pages/users/list.html",
+        "Title":     "Users",
+        "Users":     users,
+    }
 }
 
 func (c *UserController) Show(ctx types.Context) any {
-    user := c.service.GetByID(ctx.Param("id"))
+    user := c.service.GetByID(ctx.Request().Params()["id"])
     if user == nil {
-        return ctx.Status(404).View("pages/404.html", nil)
+        return map[string]interface{}{
+            "_template": "pages/404.html",
+            "_status":   404,
+        }
     }
 
-    return ctx.View("pages/users/show.html", map[string]interface{}{
-        "Title": user.Name,
-        "User":  user,
-    })
+    return map[string]interface{}{
+        "_template": "pages/users/show.html",
+        "Title":     user.Name,
+        "User":      user,
+    }
 }
 ```
 
@@ -188,46 +213,72 @@ func (c *UserController) Show(ctx types.Context) any {
 ### Processing Form
 
 ```go
+import (
+    "encoding/json"
+    "net/url"
+)
+
 type CreateUserForm struct {
-    Email string `form:"email"`
-    Name  string `form:"name"`
+    Email string
+    Name  string
 }
 
 func (c *UserController) Create(ctx types.Context) any {
-    var form CreateUserForm
-    ctx.Bind(&form)
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]interface{}{
+            "_template": "pages/users/create.html",
+            "Errors":    map[string]string{"_form": "Failed to read form"},
+        }
+    }
+
+    values, _ := url.ParseQuery(string(body))
+    form := CreateUserForm{
+        Email: values.Get("email"),
+        Name:  values.Get("name"),
+    }
 
     errors := c.validate(form)
     if len(errors) > 0 {
-        return ctx.View("pages/users/create.html", map[string]interface{}{
-            "Form":   form,
-            "Errors": errors,
-        })
+        return map[string]interface{}{
+            "_template": "pages/users/create.html",
+            "Form":      form,
+            "Errors":    errors,
+        }
     }
 
     c.service.Create(form)
-    return ctx.Redirect("/users")
+    return map[string]interface{}{
+        "_redirect": "/users",
+    }
 }
 ```
 
 ## Sessions
 
-### Session Management
+Session management is typically handled via cookies and context values:
 
 ```go
 func (c *AuthController) Login(ctx types.Context) any {
     // Validate credentials...
 
-    // Set session
-    ctx.Session().Set("user_id", user.ID)
-    ctx.Session().Set("user_name", user.Name)
+    // Store user info in context for the request
+    ctx.SetValue("user_id", user.ID)
+    ctx.SetValue("user_name", user.Name)
 
-    return ctx.Redirect("/dashboard")
+    // For persistent sessions, set a cookie via raw response
+    // or use a session middleware
+
+    return map[string]interface{}{
+        "_redirect": "/dashboard",
+    }
 }
 
 func (c *AuthController) Logout(ctx types.Context) any {
-    ctx.Session().Clear()
-    return ctx.Redirect("/")
+    // Clear session cookie via raw response
+    return map[string]interface{}{
+        "_redirect": "/",
+    }
 }
 ```
 
@@ -236,42 +287,46 @@ func (c *AuthController) Logout(ctx types.Context) any {
 ```go
 type SessionMiddleware struct{}
 
-func (m *SessionMiddleware) Handle(ctx types.Context, next types.Next) any {
-    userID := ctx.Session().Get("user_id")
-    if userID != nil {
-        ctx.Set("current_user_id", userID)
-    }
-    return next()
+func (m *SessionMiddleware) Handle(ctx types.Context) error {
+    // Read session from cookie/header
+    // Store in context
+    ctx.SetValue("current_user_id", userID)
+    return nil
 }
 ```
 
 ## Flash Messages
 
+Flash messages can be implemented via session/cookie storage:
+
 ```go
 func (c *UserController) Create(ctx types.Context) any {
     // Create user...
 
-    ctx.Flash("success", "User created successfully!")
-    return ctx.Redirect("/users")
+    // Store flash message (implement via session storage)
+    return map[string]interface{}{
+        "_redirect": "/users",
+        "_flash":    map[string]string{"success": "User created successfully!"},
+    }
 }
 
 func (c *UserController) List(ctx types.Context) any {
-    return ctx.View("pages/users/list.html", map[string]interface{}{
-        "Users":    c.service.GetAll(),
-        "FlashMsg": ctx.Flash("success"),
-    })
+    // Retrieve flash from session
+    flashMsg := "" // Read from session/cookie
+
+    return map[string]interface{}{
+        "_template": "pages/users/list.html",
+        "Users":     c.service.GetAll(),
+        "FlashMsg":  flashMsg,
+    }
 }
 ```
 
 ## Static Files
 
-### Configuration
-
-```go
-platform := web.NewPlatform(
-    web.WithStatic("./public", "/static"),
-)
-```
+Static file serving is handled by your HTTP server configuration.
+Goose does not currently have built-in `WithStatic` option.
+Configure static file serving at the server level or via middleware.
 
 ### Directory Structure
 
@@ -297,13 +352,15 @@ public/
 
 ```go
 // Simple redirect
-return ctx.Redirect("/users")
+return map[string]interface{}{
+    "_redirect": "/users",
+}
 
 // With status code
-return ctx.Redirect("/login", 302)
-
-// Back to previous page
-return ctx.Back()
+return map[string]interface{}{
+    "_redirect": "/login",
+    "_status":   302,
+}
 ```
 
 ## Routes

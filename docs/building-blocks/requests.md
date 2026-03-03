@@ -8,7 +8,36 @@ Every handler receives a `types.Context` containing all request information:
 
 ```go
 func (c *UserController) Handle(ctx types.Context) any {
-    // All request data is available through ctx
+    // Access request data through ctx.Request()
+    request := ctx.Request()
+}
+```
+
+## Context Interface
+
+The `Context` interface provides:
+
+```go
+type Context interface {
+    Request() Request      // Access request data
+    Response() Response    // Access response methods
+    SetValue(key, value any)  // Store context values
+    GetValue(key any) any     // Retrieve context values
+}
+```
+
+## Request Interface
+
+The `Request` interface provides:
+
+```go
+type Request interface {
+    Headers() map[string][]string
+    Method() Method
+    Paths() []string
+    Queries() map[string]string
+    Params() map[string]string
+    Body() ([]byte, error)
 }
 ```
 
@@ -19,8 +48,9 @@ Extract dynamic path segments:
 ```go
 // Route: /users/:id/posts/:postId
 func (c *PostController) Show(ctx types.Context) any {
-    userId := ctx.Param("id")       // First parameter
-    postId := ctx.Param("postId")   // Second parameter
+    params := ctx.Request().Params()
+    userId := params["id"]       // First parameter
+    postId := params["postId"]   // Second parameter
 
     return c.service.GetUserPost(userId, postId)
 }
@@ -33,26 +63,32 @@ Access URL query string values:
 ```go
 // GET /users?page=2&limit=10&sort=name&order=asc
 func (c *UserController) List(ctx types.Context) any {
-    page := ctx.Query("page")             // "2"
-    limit := ctx.Query("limit")           // "10"
-    sort := ctx.Query("sort")             // "name"
-    order := ctx.Query("order")           // "asc"
-
-    // With defaults
-    pageNum := ctx.QueryDefault("page", "1")
-    limitNum := ctx.QueryDefault("limit", "10")
+    queries := ctx.Request().Queries()
+    page := queries["page"]             // "2"
+    limit := queries["limit"]           // "10"
+    sort := queries["sort"]             // "name"
+    order := queries["order"]           // "asc"
 
     return c.service.ListUsers(page, limit, sort, order)
 }
 ```
 
-### Multiple Values
+### Helper for Query Defaults
 
 ```go
-// GET /search?tags=go&tags=api&tags=web
-func (c *SearchController) Search(ctx types.Context) any {
-    tags := ctx.QueryArray("tags")  // ["go", "api", "web"]
-    return c.service.SearchByTags(tags)
+// Helper function for query defaults
+func getQueryOr(queries map[string]string, key, defaultVal string) string {
+    if val, ok := queries[key]; ok && val != "" {
+        return val
+    }
+    return defaultVal
+}
+
+func (c *UserController) List(ctx types.Context) any {
+    queries := ctx.Request().Queries()
+    page := getQueryOr(queries, "page", "1")
+    limit := getQueryOr(queries, "limit", "10")
+    // ...
 }
 ```
 
@@ -60,9 +96,11 @@ func (c *SearchController) Search(ctx types.Context) any {
 
 ### JSON Binding
 
-Bind JSON request body to a struct:
+Parse JSON request body to a struct:
 
 ```go
+import "encoding/json"
+
 type CreateUserDTO struct {
     Name  string `json:"name"`
     Email string `json:"email"`
@@ -70,9 +108,14 @@ type CreateUserDTO struct {
 }
 
 func (c *UserController) Create(ctx types.Context) any {
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": "Failed to read body"}
+    }
+
     var dto CreateUserDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, "Invalid JSON: " + err.Error())
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]string{"error": "Invalid JSON: " + err.Error()}
     }
 
     return c.service.CreateUser(dto)
@@ -81,23 +124,39 @@ func (c *UserController) Create(ctx types.Context) any {
 
 ### Form Data
 
-Handle form submissions:
+Handle form submissions (parse manually or use a form parsing library):
 
 ```go
+import (
+    "encoding/json"
+    "net/url"
+)
+
 type ContactFormDTO struct {
-    Name    string `form:"name"`
-    Email   string `form:"email"`
-    Message string `form:"message"`
+    Name    string
+    Email   string
+    Message string
 }
 
 func (c *WebController) SubmitContact(ctx types.Context) any {
-    var dto ContactFormDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, "Invalid form data")
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": "Failed to read body"}
+    }
+
+    values, err := url.ParseQuery(string(body))
+    if err != nil {
+        return map[string]string{"error": "Invalid form data"}
+    }
+
+    dto := ContactFormDTO{
+        Name:    values.Get("name"),
+        Email:   values.Get("email"),
+        Message: values.Get("message"),
     }
 
     c.service.SendContactEmail(dto)
-    return ctx.Redirect("/contact/thanks")
+    return map[string]string{"redirect": "/contact/thanks"}
 }
 ```
 
@@ -107,7 +166,10 @@ Access the raw request body:
 
 ```go
 func (c *WebhookController) Handle(ctx types.Context) any {
-    body := ctx.RawBody()  // []byte
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": "Failed to read body"}
+    }
 
     // Process raw webhook payload
     return c.processWebhook(body)
@@ -120,57 +182,22 @@ Access request headers:
 
 ```go
 func (c *ApiController) Handle(ctx types.Context) any {
-    // Get single header
-    auth := ctx.Header("Authorization")
-    contentType := ctx.Header("Content-Type")
-    userAgent := ctx.Header("User-Agent")
+    headers := ctx.Request().Headers()
+
+    // Get header (returns []string for multi-value headers)
+    auth := headers["Authorization"]
+    contentType := headers["Content-Type"]
+    userAgent := headers["User-Agent"]
 
     // Custom headers
-    apiKey := ctx.Header("X-API-Key")
-    requestId := ctx.Header("X-Request-ID")
+    apiKey := headers["X-API-Key"]
+    requestId := headers["X-Request-ID"]
 
-    return nil
-}
-```
-
-## Cookies
-
-Read cookies from the request:
-
-```go
-func (c *WebController) Dashboard(ctx types.Context) any {
-    // Get cookie value
-    sessionToken := ctx.Cookie("session")
-    preferences := ctx.Cookie("prefs")
-
-    if sessionToken == "" {
-        return ctx.Redirect("/login")
+    // Get first value if exists
+    var authToken string
+    if len(auth) > 0 {
+        authToken = auth[0]
     }
-
-    return ctx.Render("dashboard.html", nil)
-}
-```
-
-## Request Metadata
-
-Access request metadata:
-
-```go
-func (c *LoggingController) Handle(ctx types.Context) any {
-    // HTTP Method
-    method := ctx.Method()  // "GET", "POST", etc.
-
-    // Request path
-    path := ctx.Path()      // "/users/123"
-
-    // Full URL
-    url := ctx.URL()        // "http://localhost:8080/users/123?foo=bar"
-
-    // Client IP address
-    ip := ctx.ClientIP()    // "192.168.1.1"
-
-    // Protocol
-    protocol := ctx.Protocol()  // "HTTP/1.1"
 
     return nil
 }
@@ -178,74 +205,69 @@ func (c *LoggingController) Handle(ctx types.Context) any {
 
 ## Context Values
 
-Store and retrieve values within the request lifecycle:
+Store and retrieve values in the request context:
 
 ```go
-// In middleware
+// Set a value (e.g., in middleware)
 func (m *AuthMiddleware) Handle(ctx types.Context) error {
-    user := m.authService.GetUser(token)
-    ctx.Set("user", user)      // Store user
-    ctx.Set("role", user.Role) // Store role
+    user := m.authService.GetUser(ctx)
+    ctx.SetValue("user", user)
     return nil
 }
 
-// In controller
+// Get a value (e.g., in controller)
 func (c *UserController) Profile(ctx types.Context) any {
-    user := ctx.Get("user").(*User)   // Retrieve user
-    role := ctx.Get("role").(string)  // Retrieve role
+    user := ctx.GetValue("user").(*User)
+    return user
+}
+```
 
-    return map[string]any{
-        "user": user,
-        "role": role,
-    }
+## Request Metadata
+
+Access request metadata through the Request interface:
+
+```go
+func (c *LoggingController) Handle(ctx types.Context) any {
+    req := ctx.Request()
+
+    // HTTP Method
+    method := req.Method()  // types.Method (GET, POST, etc.)
+
+    // Request paths (URL segments)
+    paths := req.Paths()    // []string{"users", "123"}
+
+    return nil
 }
 ```
 
 ## File Uploads
 
-Handle file uploads:
+Handle file uploads by parsing the request body:
 
 ```go
+import (
+    "mime/multipart"
+    "net/http"
+)
+
 func (c *UploadController) Upload(ctx types.Context) any {
-    file, err := ctx.File("document")
+    // Access raw response to get multipart form
+    raw := ctx.Response().Raw()
+
+    // For HTTP platforms, cast to http.ResponseWriter
+    // then parse multipart from the original request
+    // This is platform-specific handling
+
+    body, err := ctx.Request().Body()
     if err != nil {
-        return ctx.Error(400, "No file uploaded")
+        return map[string]string{"error": "Failed to read body"}
     }
 
-    // File metadata
-    filename := file.Filename     // "report.pdf"
-    size := file.Size             // 1024 bytes
-    contentType := file.ContentType // "application/pdf"
-
-    // Save file
-    path := "/uploads/" + filename
-    if err := file.Save(path); err != nil {
-        return ctx.Error(500, "Failed to save file")
-    }
+    // Process the file data from body
+    // File handling depends on your HTTP server implementation
 
     return map[string]string{
         "message": "File uploaded",
-        "path": path,
-    }
-}
-```
-
-### Multiple Files
-
-```go
-func (c *UploadController) UploadMultiple(ctx types.Context) any {
-    files, err := ctx.Files("images")
-    if err != nil {
-        return ctx.Error(400, "No files uploaded")
-    }
-
-    for _, file := range files {
-        path := "/uploads/" + file.Filename
-        file.Save(path)
-    }
-
-    return map[string]int{
-        "uploaded": len(files),
     }
 }
 ```
@@ -255,6 +277,8 @@ func (c *UploadController) UploadMultiple(ctx types.Context) any {
 Combine binding with validation:
 
 ```go
+import "encoding/json"
+
 type CreateProductDTO struct {
     Name        string  `json:"name" validate:"required,min=3,max=100"`
     Description string  `json:"description" validate:"max=500"`
@@ -263,16 +287,19 @@ type CreateProductDTO struct {
 }
 
 func (c *ProductController) Create(ctx types.Context) any {
-    var dto CreateProductDTO
-
-    // Bind JSON
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, "Invalid JSON")
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": "Failed to read body"}
     }
 
-    // Validate
-    if err := ctx.Validate(&dto); err != nil {
-        return ctx.Error(422, err.Error())
+    var dto CreateProductDTO
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]string{"error": "Invalid JSON"}
+    }
+
+    // Validate using your validation library
+    if err := c.validate(&dto); err != nil {
+        return map[string]any{"error": "validation_failed", "details": err.Error()}
     }
 
     return c.service.CreateProduct(dto)
@@ -281,15 +308,18 @@ func (c *ProductController) Create(ctx types.Context) any {
 
 ## CLI Arguments
 
-For CLI applications, access command arguments:
+For CLI applications, access command arguments through the request:
 
 ```go
 // Command: mycli greet --name=John --times=3
 func (c *CliController) Greet(ctx types.Context) any {
-    name := ctx.Arg("name")      // "John"
-    times := ctx.ArgInt("times") // 3
+    queries := ctx.Request().Queries()
+    name := queries["name"]   // "John"
+    times := queries["times"] // "3" (as string, convert as needed)
 
-    for i := 0; i < times; i++ {
+    // Convert to int
+    count, _ := strconv.Atoi(times)
+    for i := 0; i < count; i++ {
         fmt.Printf("Hello, %s!\n", name)
     }
 
@@ -302,16 +332,22 @@ func (c *CliController) Greet(ctx types.Context) any {
 ### 1. Always Validate Input
 
 ```go
-func (c *UserController) Create(ctx types.Context) any {
-    var dto CreateUserDTO
+import "encoding/json"
 
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, "Invalid request body")
+func (c *UserController) Create(ctx types.Context) any {
+    body, err := ctx.Request().Body()
+    if err != nil {
+        return map[string]string{"error": "Failed to read body"}
+    }
+
+    var dto CreateUserDTO
+    if err := json.Unmarshal(body, &dto); err != nil {
+        return map[string]string{"error": "Invalid request body"}
     }
 
     // Validate before processing
     if err := c.validate(&dto); err != nil {
-        return ctx.Error(422, err.Error())
+        return map[string]any{"error": "validation_failed", "details": err.Error()}
     }
 
     return c.service.CreateUser(dto)
@@ -330,7 +366,8 @@ type CreateUserDTO struct {
 // ❌ Bad: Untyped map
 func (c *UserController) Create(ctx types.Context) any {
     var data map[string]interface{}
-    ctx.Bind(&data)
+    body, _ := ctx.Request().Body()
+    json.Unmarshal(body, &data)
     // No type safety
 }
 ```
@@ -339,13 +376,15 @@ func (c *UserController) Create(ctx types.Context) any {
 
 ```go
 func (c *UserController) Show(ctx types.Context) any {
-    id := ctx.Param("id")
+    params := ctx.Request().Params()
+    id := params["id"]
     if id == "" {
-        return ctx.Error(400, "ID is required")
+        return map[string]string{"error": "ID is required"}
     }
 
-    page := ctx.QueryDefault("page", "1")
-    limit := ctx.QueryDefault("limit", "10")
+    queries := ctx.Request().Queries()
+    page := getQueryOr(queries, "page", "1")
+    limit := getQueryOr(queries, "limit", "10")
 
     return c.service.GetUser(id)
 }

@@ -60,15 +60,19 @@ s.log.Emergency("System crash", "error", err)
 ### Basic Setup
 
 ```go
-import "github.com/awesome-goose/goose/log"
+import (
+    "github.com/awesome-goose/goose/log"
+    "github.com/awesome-goose/goose/log/formatters"
+    "github.com/awesome-goose/goose/log/processors"
+)
 
 func setupLogger() types.Log {
     return log.NewLog(
         log.AppLogChannel("app"),
         log.NewLogger(
             []types.Modifier{},
-            log.NewLineFormatter(),
-            log.NewConsoleProcessor(),
+            formatters.NewLine(),
+            processors.NewConsole(),
         ),
     )
 }
@@ -77,43 +81,50 @@ func setupLogger() types.Log {
 ### With Formatters
 
 ```go
+import "github.com/awesome-goose/goose/log/formatters"
+
 // Line format (human readable)
-log.NewLineFormatter()
-// Output: [2024-01-15 10:30:45] app.INFO: User created {"user_id": "123"}
+formatters.NewLine()
+// Output: 2024-01-15 10:30:45 [app] INFO: User created | extra: [...]
 
 // JSON format (machine readable)
-log.NewJsonFormatter()
-// Output: {"datetime": "2024-01-15T10:30:45Z", "level": "info", "message": "User created", "user_id": "123"}
+formatters.NewJSON()
+// Output: {"datetime":"...","channel":"app","level":"info","message":"User created",...}
 
 // Syslog format
-log.NewSyslogFormatter()
+formatters.NewSyslog()
 ```
 
 ### With Processors
 
 ```go
-// Console output
-log.NewConsoleProcessor()
+import "github.com/awesome-goose/goose/log/processors"
 
-// File output
-log.NewFileProcessor("/var/log/app.log")
+// Console output
+processors.NewConsole()
+
+// File output (directory path - files are created by hour)
+processors.NewFileProcessor("./storage/logs")
+// Creates: ./storage/logs/2024/01/15/10.txt
 
 // Syslog output
-log.NewSyslogProcessor("app", syslog.LOG_LOCAL0)
+// processors.NewSyslog() // If available
 ```
 
 ### With Modifiers
 
 ```go
+import "github.com/awesome-goose/goose/log/modifiers"
+
 log.NewLogger(
     []types.Modifier{
-        log.NewColorModifier(),      // Colorized output
-        log.NewStackTraceModifier(), // Include stack traces
-        log.NewSystemInfoModifier(), // Include system info
-        log.NewUuidModifier(),       // Add UUID to each log
+        modifiers.NewColorTagsModifier(), // Colorized output
+        modifiers.NewStackTrace(),         // Include stack traces
+        modifiers.NewSystemInfo(),         // Include system info
+        modifiers.NewUUID(),               // Add UUID to each log
     },
-    log.NewLineFormatter(),
-    log.NewConsoleProcessor(),
+    formatters.NewLine(),
+    processors.NewConsole(),
 )
 ```
 
@@ -122,12 +133,19 @@ log.NewLogger(
 Configure different logging channels:
 
 ```go
+import (
+    "github.com/awesome-goose/goose/log"
+    "github.com/awesome-goose/goose/log/formatters"
+    "github.com/awesome-goose/goose/log/modifiers"
+    "github.com/awesome-goose/goose/log/processors"
+)
+
 logger := log.NewLog(
     log.AppLogChannel("console"),
     log.NewLogger(
-        []types.Modifier{log.NewColorModifier()},
-        log.NewLineFormatter(),
-        log.NewConsoleProcessor(),
+        []types.Modifier{modifiers.NewColorTagsModifier()},
+        formatters.NewLine(),
+        processors.NewConsole(),
     ),
 )
 
@@ -135,8 +153,8 @@ logger := log.NewLog(
 logger.Add("file",
     log.NewLogger(
         []types.Modifier{},
-        log.NewJsonFormatter(),
-        log.NewFileProcessor("/var/log/app.log"),
+        formatters.NewJSON(),
+        processors.NewFileProcessor("./storage/logs"),
     ),
 )
 
