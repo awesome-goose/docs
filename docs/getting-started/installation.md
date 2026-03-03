@@ -43,7 +43,7 @@ goose --version
 You should see output like:
 
 ```
-goose version 1.0.0
+goose version 0.0.0
 ```
 
 ### Build from Source

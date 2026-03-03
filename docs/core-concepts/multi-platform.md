@@ -42,7 +42,7 @@ import "github.com/awesome-goose/goose/platforms/cli"
 
 platform := cli.NewPlatform(
     cli.WithName("mycli"),
-    cli.WithVersion("1.0.0"),
+    cli.WithVersion("0.0.0"),
 )
 ```
 

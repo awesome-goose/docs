@@ -31,7 +31,7 @@ goose --version
 Expected output:
 
 ```
-goose version 1.0.0
+goose version 0.0.0
 ```
 
 ### Building from Source

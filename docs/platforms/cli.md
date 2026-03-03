@@ -20,7 +20,7 @@ import (
 func main() {
     platform := cli.NewPlatform(
         cli.WithName("myapp"),
-        cli.WithVersion("1.0.0"),
+        cli.WithVersion("0.0.0"),
     )
 
     module := &app.AppModule{}
@@ -38,7 +38,7 @@ func main() {
 ```go
 platform := cli.NewPlatform(
     cli.WithName("myapp"),
-    cli.WithVersion("1.0.0"),
+    cli.WithVersion("0.0.0"),
     cli.WithDescription("My CLI application"),
 )
 ```

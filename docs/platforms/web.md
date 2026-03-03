@@ -43,7 +43,7 @@ platform := web.NewPlatform(
     web.WithPort(3000),
     web.WithTimeout(30),                // Request timeout (seconds)
     web.WithName("My Web App"),
-    web.WithVersion("1.0.0"),
+    web.WithVersion("0.0.0"),
     web.WithAuthor("Your Name"),
     web.WithDescription("Web app description"),
 )

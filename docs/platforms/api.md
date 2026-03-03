@@ -43,7 +43,7 @@ platform := api.NewPlatform(
     api.WithPort(8080),                 // Port
     api.WithTimeout(30),                // Request timeout (seconds)
     api.WithName("My API"),             // API name
-    api.WithVersion("1.0.0"),           // API version
+    api.WithVersion("0.0.0"),           // API version
     api.WithAuthor("Your Name"),        // Author
     api.WithDescription("API description"),
 )

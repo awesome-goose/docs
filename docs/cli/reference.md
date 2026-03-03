@@ -114,7 +114,7 @@ goose -v
 **Output:**
 
 ```
-goose version 1.0.0
+goose version 0.0.0
 ```
 
 ---

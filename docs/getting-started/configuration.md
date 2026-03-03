@@ -73,7 +73,7 @@ config/
 
 ```yaml
 name: myapp
-version: 1.0.0
+version: 0.0.0
 timezone: UTC
 
 server:
@@ -156,7 +156,7 @@ import "github.com/awesome-goose/goose/platforms/cli"
 
 platform := cli.NewPlatform(
     cli.WithName("mycli"),
-    cli.WithVersion("1.0.0"),
+    cli.WithVersion("0.0.0"),
 )
 ```
 

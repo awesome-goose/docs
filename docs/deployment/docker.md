@@ -274,10 +274,10 @@ services:
 docker build -t myapp:latest .
 
 # Build with tag
-docker build -t myapp:1.0.0 .
+docker build -t myapp:0.0.0 .
 
 # Build with build args
-docker build --build-arg VERSION=1.0.0 -t myapp:1.0.0 .
+docker build --build-arg VERSION=0.0.0 -t myapp:0.0.0 .
 
 # Build for specific platform
 docker build --platform linux/amd64 -t myapp:latest .
