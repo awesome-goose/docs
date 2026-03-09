@@ -2,6 +2,16 @@
 
 Write tests for your Goose applications to ensure reliability and maintainability.
 
+## Import
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+```
+
 ## Testing Approach
 
 Goose applications can be tested at multiple levels:
@@ -15,7 +25,7 @@ Goose applications can be tested at multiple levels:
 
 ## Quick Start
 
-### Set Up Test File
+### Set Up Test File with Goose Testing
 
 ```go
 // app/users/users_test.go
@@ -23,9 +33,14 @@ package users
 
 import (
     "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
 )
 
 func TestUserService_Create(t *testing.T) {
+    // Create test helper with fluent assertions
+    test := goosetest.New(t)
+
     // Arrange
     service := NewUserService()
 
@@ -35,13 +50,9 @@ func TestUserService_Create(t *testing.T) {
         Name:  "Test User",
     })
 
-    // Assert
-    if err != nil {
-        t.Errorf("expected no error, got %v", err)
-    }
-    if user.Email != "test@example.com" {
-        t.Errorf("expected email test@example.com, got %s", user.Email)
-    }
+    // Assert with fluent API
+    test.Expect(err).ToBeNil()
+    test.Expect(user.Email).ToEqual("test@example.com")
 }
 ```
 
@@ -66,7 +77,15 @@ go test -run TestUserService_Create ./app/users/...
 ### Arrange-Act-Assert Pattern
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestCalculateTotal(t *testing.T) {
+    test := goosetest.New(t)
+
     // Arrange - Set up test data
     items := []Item{
         {Price: 10.00, Quantity: 2},
@@ -76,18 +95,23 @@ func TestCalculateTotal(t *testing.T) {
     // Act - Execute the code under test
     total := calculateTotal(items)
 
-    // Assert - Verify the result
-    expected := 35.00
-    if total != expected {
-        t.Errorf("expected %.2f, got %.2f", expected, total)
-    }
+    // Assert - Verify the result with fluent assertions
+    test.Expect(total).ToEqual(35.00)
 }
 ```
 
 ### Table-Driven Tests
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestValidateEmail(t *testing.T) {
+    test := goosetest.New(t)
+
     tests := []struct {
         name     string
         email    string
@@ -103,20 +127,75 @@ func TestValidateEmail(t *testing.T) {
     for _, tc := range tests {
         t.Run(tc.name, func(t *testing.T) {
             result := validateEmail(tc.email)
-            if result != tc.expected {
-                t.Errorf("validateEmail(%q) = %v, expected %v",
-                    tc.email, result, tc.expected)
-            }
+            test.Expect(result).ToEqual(tc.expected)
         })
     }
 }
 ```
 
-## Testing with Dependencies
+## Test Suite Management
 
-### Using Interfaces
+Use `SuiteRunner` for organized test suites with setup/teardown:
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
+type UserServiceSuite struct {
+    goosetest.Suite
+    service *UserService
+    db      *MockDB
+}
+
+func (s *UserServiceSuite) SetupSuite() {
+    // Runs once before all tests
+    s.db = NewMockDB()
+}
+
+func (s *UserServiceSuite) SetupTest() {
+    // Runs before each test
+    s.service = &UserService{db: s.db}
+    s.db.Clear()
+}
+
+func (s *UserServiceSuite) TeardownTest() {
+    // Runs after each test
+    s.db.Clear()
+}
+
+func (s *UserServiceSuite) TestCreate() {
+    user, err := s.service.Create(CreateUserDTO{Email: "test@example.com"})
+    s.T.Expect(err).ToBeNil()
+    s.T.Expect(user.Email).ToEqual("test@example.com")
+}
+
+func (s *UserServiceSuite) TestGetByID() {
+    s.db.Insert(&User{ID: "123", Email: "test@example.com"})
+    user, err := s.service.GetByID("123")
+    s.T.Expect(err).ToBeNil()
+    s.T.Expect(user.ID).ToEqual("123")
+}
+
+func TestUserServiceSuite(t *testing.T) {
+    runner := goosetest.NewSuiteRunner(t, &UserServiceSuite{})
+    runner.Run()
+}
+```
+
+## Testing with Dependencies
+
+### Using the Test Container
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 // Define interface
 type EmailSender interface {
     Send(to, subject, body string) error
@@ -124,51 +203,120 @@ type EmailSender interface {
 
 // Service uses interface
 type UserService struct {
-    emailSender EmailSender
+    EmailSender EmailSender
 }
 
 func (s *UserService) Register(dto RegisterDTO) (*User, error) {
     user := &User{Email: dto.Email, Name: dto.Name}
-    // Save user...
-
-    s.emailSender.Send(dto.Email, "Welcome!", "Welcome to our app")
+    s.EmailSender.Send(dto.Email, "Welcome!", "Welcome to our app")
     return user, nil
+}
+
+// Test with TestContainer for dependency injection
+func TestUserService_Register(t *testing.T) {
+    test := goosetest.New(t)
+    container := goosetest.NewTestContainer()
+
+    // Register mock dependency
+    mockSender := &MockEmailSender{}
+    container.Register(mockSender)
+
+    // Create service and inject dependencies
+    service := &UserService{}
+    container.Inject(service)
+
+    // Test
+    user, err := service.Register(RegisterDTO{Email: "test@example.com", Name: "Test"})
+    test.Expect(err).ToBeNil()
+    test.Expect(user.Email).ToEqual("test@example.com")
 }
 ```
 
-### Mock Implementation
+### Using the Mock Helper
 
 ```go
-// Mock for testing
-type MockEmailSender struct {
-    SentEmails []SentEmail
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
+func TestWithMock(t *testing.T) {
+    mock := goosetest.NewMock(t)
+
+    // Set up return values
+    mock.On("GetUser", &User{ID: "123", Email: "test@example.com"}, nil)
+
+    // Set up expectations
+    mock.ExpectCall("GetUser", 1, "123")
+
+    // Execute code that calls mock
+    result := mock.Called("GetUser", "123")
+
+    // Verify expectations were met
+    mock.Verify()
 }
+```
 
-type SentEmail struct {
-    To      string
-    Subject string
-    Body    string
-}
+## Test Fixtures
 
-func (m *MockEmailSender) Send(to, subject, body string) error {
-    m.SentEmails = append(m.SentEmails, SentEmail{to, subject, body})
-    return nil
-}
+Generate random test data with `Fixture`:
 
-// Test
-func TestUserService_Register_SendsWelcomeEmail(t *testing.T) {
-    mockSender := &MockEmailSender{}
-    service := &UserService{emailSender: mockSender}
+```go
+import (
+    "testing"
 
-    service.Register(RegisterDTO{Email: "test@example.com", Name: "Test"})
+    goosetest "github.com/awesome-goose/goose/testing"
+)
 
-    if len(mockSender.SentEmails) != 1 {
-        t.Errorf("expected 1 email sent, got %d", len(mockSender.SentEmails))
+func TestWithFixtures(t *testing.T) {
+    fixture := goosetest.NewFixture()
+
+    // Generate random data
+    email := fixture.Email()           // e.g., "aBcDeFgHiJ@kLmNo.com"
+    name := fixture.String(10)         // Random 10-char string
+    age := fixture.Int(18, 65)         // Random int between 18-65
+    active := fixture.Bool()           // Random boolean
+
+    user := &User{
+        Email:  email,
+        Name:   name,
+        Age:    age,
+        Active: active,
     }
+    // Use user in tests...
+}
+```
 
-    if mockSender.SentEmails[0].To != "test@example.com" {
-        t.Errorf("expected email to test@example.com")
-    }
+## Test Tagging
+
+Control which tests run based on environment:
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
+func TestUnitOnly(t *testing.T) {
+    goosetest.SkipUnlessUnit(t)
+    // This test only runs for unit tests (default)
+}
+
+func TestIntegrationOnly(t *testing.T) {
+    goosetest.SkipUnlessIntegration(t)
+    // Run with: TEST_LEVEL=integration go test ./...
+}
+
+func TestE2EOnly(t *testing.T) {
+    goosetest.SkipUnlessE2E(t)
+    // Run with: TEST_LEVEL=e2e go test ./...
+}
+
+func TestSkipInCI(t *testing.T) {
+    goosetest.SkipInCI(t)
+    // Skipped when CI=true environment variable is set
 }
 ```
 
@@ -177,6 +325,11 @@ func TestUserService_Register_SendsWelcomeEmail(t *testing.T) {
 ### Setup and Teardown
 
 ```go
+import (
+    "os"
+    "testing"
+)
+
 func TestMain(m *testing.M) {
     // Setup before all tests
     setupTestDatabase()
@@ -199,91 +352,58 @@ func teardownTestDatabase() {
 }
 ```
 
-### Per-Test Setup
+## Fluent Assertions Reference
+
+The `goosetest.T` wrapper provides fluent assertions:
 
 ```go
-func setupTest(t *testing.T) (*gorm.DB, func()) {
-    db := createTestDB()
+import (
+    "testing"
 
-    // Return cleanup function
-    cleanup := func() {
-        sqlDB, _ := db.DB()
-        sqlDB.Close()
-    }
+    goosetest "github.com/awesome-goose/goose/testing"
+)
 
-    return db, cleanup
-}
+func TestAssertions(t *testing.T) {
+    test := goosetest.New(t)
 
-func TestUserService(t *testing.T) {
-    db, cleanup := setupTest(t)
-    defer cleanup()
+    // Equality
+    test.Expect(42).ToEqual(42)
+    test.Expect("hello").ToBe("hello")
+    test.Expect(obj1).ToDeepEqual(obj2)
 
-    service := &UserService{db: db}
-    // Test...
-}
-```
+    // Nil checks
+    test.Expect(nil).ToBeNil()
+    test.Expect(value).Not().ToBeNil()
 
-## Assertions
+    // Negation
+    test.Expect(10).Not().ToEqual(20)
 
-### Standard Library
+    // Boolean
+    test.Expect(true).ToBeTrue()
+    test.Expect(false).ToBeFalse()
 
-```go
-func TestExample(t *testing.T) {
-    result := 42
+    // Numeric comparisons
+    test.Expect(10).ToBeGreaterThan(5)
+    test.Expect(5).ToBeLessThan(10)
 
-    if result != 42 {
-        t.Errorf("expected 42, got %d", result)
-    }
+    // String assertions
+    test.Expect("hello world").ToContain("world")
+    test.Expect("hello").ToStartWith("he")
+    test.Expect("hello").ToEndWith("lo")
 
-    if result == 0 {
-        t.Fatal("result should not be zero")
-    }
-}
-```
-
-### Custom Assertion Helpers
-
-```go
-func assertEqual(t *testing.T, expected, actual interface{}) {
-    t.Helper()
-    if expected != actual {
-        t.Errorf("expected %v, got %v", expected, actual)
-    }
-}
-
-func assertNil(t *testing.T, value interface{}) {
-    t.Helper()
-    if value != nil {
-        t.Errorf("expected nil, got %v", value)
-    }
-}
-
-func assertNotNil(t *testing.T, value interface{}) {
-    t.Helper()
-    if value == nil {
-        t.Error("expected non-nil value")
-    }
-}
-
-// Usage
-func TestWithHelpers(t *testing.T) {
-    result, err := someFunction()
-
-    assertNil(t, err)
-    assertEqual(t, "expected", result)
+    // Collections
+    test.Expect(len(slice)).ToBeGreaterThan(0)
+    test.Expect(slice).ToHaveLength(3)
 }
 ```
 
-## Test Coverage
+## Next Steps
 
-```bash
-# Generate coverage report
-go test -cover ./...
-```
+- [Unit Testing](unit.md) - Test individual components
+- [Integration Testing](integration.md) - Test module interactions
+- [HTTP Testing](http.md) - Test API endpoints
+- [E2E Testing](e2e.md) - Test full user flows
 
-## Best Practices
-
-1. **Test behavior, not implementation** - Focus on what, not how
 2. **Use descriptive test names** - Clearly state what's being tested
 3. **Keep tests independent** - Tests shouldn't affect each other
 4. **Use table-driven tests** - For multiple input variations

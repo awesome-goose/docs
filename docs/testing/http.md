@@ -1,14 +1,25 @@
 # HTTP Testing
 
-Test your API endpoints.
+Test your API endpoints using the `HTTPTest` utility from goose/testing.
+
+## Import
+
+```go
+import (
+    "net/http"
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+```
 
 ## Overview
 
-HTTP tests verify that your API endpoints return correct responses.
+HTTP tests verify that your API endpoints return correct responses. The `HTTPTest` helper provides a fluent API for building requests and asserting responses.
 
 ## Test Setup
 
-### Create Test Server
+### Using HTTPTest
 
 ```go
 // test_helper.go
@@ -16,71 +27,27 @@ package tests
 
 import (
     "net/http"
-    "net/http/httptest"
     "testing"
 
     "myapp/app"
-    "github.com/awesome-goose/goose"
+    goosetest "github.com/awesome-goose/goose/testing"
 )
 
-func setupTestServer(t *testing.T) *httptest.Server {
-    // Create test application
-    module := &app.AppModule{}
+func setupTestServer(t *testing.T) *goosetest.HTTPTest {
+    // Create your HTTP handler
+    handler := createHandler(&app.AppModule{})
 
-    // Create HTTP handler
-    handler := goose.CreateHandler(module)
+    // Create HTTPTest with the handler
+    ht := goosetest.NewHTTPTest(t, handler)
 
-    // Create test server
-    server := httptest.NewServer(handler)
+    // Start a test server (for real HTTP requests)
+    ht.WithServer()
 
     t.Cleanup(func() {
-        server.Close()
+        ht.Close()
     })
 
-    return server
-}
-```
-
-### Helper Functions
-
-```go
-func makeRequest(t *testing.T, method, url string, body interface{}) *http.Response {
-    t.Helper()
-
-    var reqBody io.Reader
-    if body != nil {
-        jsonBody, _ := json.Marshal(body)
-        reqBody = bytes.NewBuffer(jsonBody)
-    }
-
-    req, err := http.NewRequest(method, url, reqBody)
-    if err != nil {
-        t.Fatalf("Failed to create request: %v", err)
-    }
-
-    req.Header.Set("Content-Type", "application/json")
-
-    client := &http.Client{}
-    resp, err := client.Do(req)
-    if err != nil {
-        t.Fatalf("Request failed: %v", err)
-    }
-
-    return resp
-}
-
-func parseResponse(t *testing.T, resp *http.Response, v interface{}) {
-    t.Helper()
-    defer resp.Body.Close()
-
-    body, err := io.ReadAll(resp.Body)
-    if err != nil {
-        t.Fatalf("Failed to read response: %v", err)
-    }
-
-    if err := json.Unmarshal(body, v); err != nil {
-        t.Fatalf("Failed to parse response: %v", err)
-    }
+    return ht
 }
 ```
 
@@ -89,59 +56,60 @@ func parseResponse(t *testing.T, resp *http.Response, v interface{}) {
 ### GET Request
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestGetUsers(t *testing.T) {
-    server := setupTestServer(t)
+    ht := setupTestServer(t)
 
-    resp := makeRequest(t, "GET", server.URL+"/api/users", nil)
-    defer resp.Body.Close()
+    // Fluent API for GET request
+    ht.GET("/api/users").
+        Do().
+        ExpectOK()
+}
 
-    // Assert status code
-    if resp.StatusCode != http.StatusOK {
-        t.Errorf("expected status 200, got %d", resp.StatusCode)
-    }
+func TestGetUserByID(t *testing.T) {
+    ht := setupTestServer(t)
 
-    // Parse response
-    var users []User
-    parseResponse(t, resp, &users)
+    var user User
+    ht.GET("/api/users/123").
+        Do().
+        ExpectOK().
+        JSON(&user)
 
-    // Assert response body
-    if len(users) == 0 {
-        t.Error("expected at least one user")
-    }
+    ht.T.Expect(user.ID).ToEqual("123")
 }
 ```
 
 ### POST Request
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestCreateUser(t *testing.T) {
-    server := setupTestServer(t)
+    ht := setupTestServer(t)
 
     body := map[string]string{
         "email": "test@example.com",
         "name":  "Test User",
     }
 
-    resp := makeRequest(t, "POST", server.URL+"/api/users", body)
-    defer resp.Body.Close()
-
-    // Assert status code
-    if resp.StatusCode != http.StatusCreated {
-        t.Errorf("expected status 201, got %d", resp.StatusCode)
-    }
-
-    // Parse response
     var user User
-    parseResponse(t, resp, &user)
+    ht.POST("/api/users").
+        WithJSON(body).
+        Do().
+        ExpectCreated().
+        JSON(&user)
 
-    // Assert response
-    if user.Email != "test@example.com" {
-        t.Errorf("expected email test@example.com, got %s", user.Email)
-    }
-
-    if user.ID == "" {
-        t.Error("expected user ID to be set")
-    }
+    ht.T.Expect(user.Email).ToEqual("test@example.com")
+    ht.T.Expect(user.ID).Not().ToEqual("")
 }
 ```
 
@@ -149,36 +117,25 @@ func TestCreateUser(t *testing.T) {
 
 ```go
 func TestUpdateUser(t *testing.T) {
-    server := setupTestServer(t)
+    ht := setupTestServer(t)
 
     // First create a user
-    createBody := map[string]string{
-        "email": "original@example.com",
-        "name":  "Original Name",
-    }
-    createResp := makeRequest(t, "POST", server.URL+"/api/users", createBody)
-
     var createdUser User
-    parseResponse(t, createResp, &createdUser)
+    ht.POST("/api/users").
+        WithJSON(map[string]string{"email": "original@example.com", "name": "Original"}).
+        Do().
+        ExpectCreated().
+        JSON(&createdUser)
 
     // Update the user
-    updateBody := map[string]string{
-        "name": "Updated Name",
-    }
-
-    resp := makeRequest(t, "PUT", server.URL+"/api/users/"+createdUser.ID, updateBody)
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
-        t.Errorf("expected status 200, got %d", resp.StatusCode)
-    }
-
     var updatedUser User
-    parseResponse(t, resp, &updatedUser)
+    ht.PUT("/api/users/" + createdUser.ID).
+        WithJSON(map[string]string{"name": "Updated Name"}).
+        Do().
+        ExpectOK().
+        JSON(&updatedUser)
 
-    if updatedUser.Name != "Updated Name" {
-        t.Errorf("expected name Updated Name, got %s", updatedUser.Name)
-    }
+    ht.T.Expect(updatedUser.Name).ToEqual("Updated Name")
 }
 ```
 
@@ -186,80 +143,101 @@ func TestUpdateUser(t *testing.T) {
 
 ```go
 func TestDeleteUser(t *testing.T) {
-    server := setupTestServer(t)
+    ht := setupTestServer(t)
 
     // Create user first
-    createBody := map[string]string{
-        "email": "delete@example.com",
-        "name":  "To Delete",
-    }
-    createResp := makeRequest(t, "POST", server.URL+"/api/users", createBody)
-
     var user User
-    parseResponse(t, createResp, &user)
+    ht.POST("/api/users").
+        WithJSON(map[string]string{"email": "delete@example.com", "name": "To Delete"}).
+        Do().
+        ExpectCreated().
+        JSON(&user)
 
     // Delete the user
-    resp := makeRequest(t, "DELETE", server.URL+"/api/users/"+user.ID, nil)
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusNoContent {
-        t.Errorf("expected status 204, got %d", resp.StatusCode)
-    }
+    ht.DELETE("/api/users/" + user.ID).
+        Do().
+        ExpectNoContent()
 
     // Verify deletion
-    getResp := makeRequest(t, "GET", server.URL+"/api/users/"+user.ID, nil)
-    if getResp.StatusCode != http.StatusNotFound {
-        t.Errorf("expected status 404 after deletion, got %d", getResp.StatusCode)
-    }
+    ht.GET("/api/users/" + user.ID).
+        Do().
+        ExpectNotFound()
+}
+```
+
+### PATCH Request
+
+```go
+func TestPatchUser(t *testing.T) {
+    ht := setupTestServer(t)
+
+    var user User
+    ht.PATCH("/api/users/123").
+        WithJSON(map[string]string{"name": "Patched Name"}).
+        Do().
+        ExpectOK().
+        JSON(&user)
+
+    ht.T.Expect(user.Name).ToEqual("Patched Name")
 }
 ```
 
 ## Testing Authentication
 
-### With JWT
+### With Bearer Token
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestProtectedEndpoint(t *testing.T) {
-    server := setupTestServer(t)
+    ht := setupTestServer(t)
 
     t.Run("without token", func(t *testing.T) {
-        req, _ := http.NewRequest("GET", server.URL+"/api/protected", nil)
-
-        client := &http.Client{}
-        resp, _ := client.Do(req)
-        defer resp.Body.Close()
-
-        if resp.StatusCode != http.StatusUnauthorized {
-            t.Errorf("expected status 401, got %d", resp.StatusCode)
-        }
+        ht.GET("/api/protected").
+            Do().
+            ExpectUnauthorized()
     })
 
     t.Run("with valid token", func(t *testing.T) {
         token := generateTestToken("user-123")
 
-        req, _ := http.NewRequest("GET", server.URL+"/api/protected", nil)
-        req.Header.Set("Authorization", "Bearer "+token)
-
-        client := &http.Client{}
-        resp, _ := client.Do(req)
-        defer resp.Body.Close()
-
-        if resp.StatusCode != http.StatusOK {
-            t.Errorf("expected status 200, got %d", resp.StatusCode)
-        }
+        ht.GET("/api/protected").
+            WithBearer(token).
+            Do().
+            ExpectOK()
     })
 
     t.Run("with invalid token", func(t *testing.T) {
-        req, _ := http.NewRequest("GET", server.URL+"/api/protected", nil)
-        req.Header.Set("Authorization", "Bearer invalid-token")
+        ht.GET("/api/protected").
+            WithBearer("invalid-token").
+            Do().
+            ExpectUnauthorized()
+    })
+}
+```
 
-        client := &http.Client{}
-        resp, _ := client.Do(req)
-        defer resp.Body.Close()
+### With Basic Auth
 
-        if resp.StatusCode != http.StatusUnauthorized {
-            t.Errorf("expected status 401, got %d", resp.StatusCode)
-        }
+```go
+func TestBasicAuth(t *testing.T) {
+    ht := setupTestServer(t)
+
+    t.Run("with valid credentials", func(t *testing.T) {
+        ht.GET("/api/admin").
+            WithBasicAuth("admin", "password").
+            Do().
+            ExpectOK()
+    })
+
+    t.Run("with invalid credentials", func(t *testing.T) {
+        ht.GET("/api/admin").
+            WithBasicAuth("admin", "wrong").
+            Do().
+            ExpectUnauthorized()
     })
 }
 ```
@@ -267,8 +245,15 @@ func TestProtectedEndpoint(t *testing.T) {
 ## Testing Validation
 
 ```go
+import (
+    "net/http"
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestCreateUser_Validation(t *testing.T) {
-    server := setupTestServer(t)
+    ht := setupTestServer(t)
 
     tests := []struct {
         name           string
@@ -299,12 +284,10 @@ func TestCreateUser_Validation(t *testing.T) {
 
     for _, tc := range tests {
         t.Run(tc.name, func(t *testing.T) {
-            resp := makeRequest(t, "POST", server.URL+"/api/users", tc.body)
-            defer resp.Body.Close()
-
-            if resp.StatusCode != tc.expectedStatus {
-                t.Errorf("expected status %d, got %d", tc.expectedStatus, resp.StatusCode)
-            }
+            ht.POST("/api/users").
+                WithJSON(tc.body).
+                Do().
+                ExpectStatus(tc.expectedStatus)
         })
     }
 }
@@ -314,21 +297,32 @@ func TestCreateUser_Validation(t *testing.T) {
 
 ```go
 func TestNotFoundError(t *testing.T) {
-    server := setupTestServer(t)
-
-    resp := makeRequest(t, "GET", server.URL+"/api/users/non-existent-id", nil)
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusNotFound {
-        t.Errorf("expected status 404, got %d", resp.StatusCode)
-    }
+    ht := setupTestServer(t)
 
     var errResp map[string]string
-    parseResponse(t, resp, &errResp)
+    ht.GET("/api/users/non-existent-id").
+        Do().
+        ExpectNotFound().
+        JSON(&errResp)
 
-    if errResp["error"] == "" {
-        t.Error("expected error message in response")
-    }
+    ht.T.Expect(errResp["error"]).Not().ToEqual("")
+}
+
+func TestInternalServerError(t *testing.T) {
+    ht := setupTestServer(t)
+
+    ht.GET("/api/trigger-error").
+        Do().
+        ExpectInternalServerError()
+}
+
+func TestForbiddenAccess(t *testing.T) {
+    ht := setupTestServer(t)
+
+    ht.DELETE("/api/admin/users/123").
+        WithBearer(regularUserToken).
+        Do().
+        ExpectForbidden()
 }
 ```
 
@@ -336,98 +330,83 @@ func TestNotFoundError(t *testing.T) {
 
 ```go
 func TestGetUsersWithPagination(t *testing.T) {
-    server := setupTestServer(t)
-
-    // Create some users first
-    for i := 0; i < 20; i++ {
-        makeRequest(t, "POST", server.URL+"/api/users", map[string]string{
-            "email": fmt.Sprintf("user%d@example.com", i),
-            "name":  fmt.Sprintf("User %d", i),
-        })
-    }
-
-    // Test pagination
-    resp := makeRequest(t, "GET", server.URL+"/api/users?page=1&limit=10", nil)
-    defer resp.Body.Close()
+    ht := setupTestServer(t)
 
     var users []User
-    parseResponse(t, resp, &users)
+    resp := ht.GET("/api/users").
+        WithQuery("page", "1").
+        WithQuery("limit", "10").
+        Do().
+        ExpectOK().
+        JSON(&users)
 
-    if len(users) != 10 {
-        t.Errorf("expected 10 users, got %d", len(users))
-    }
+    ht.T.Expect(len(users)).ToBeLessThanOrEqual(10)
 
     // Check pagination headers
-    totalCount := resp.Header.Get("X-Total-Count")
-    if totalCount == "" {
-        t.Error("expected X-Total-Count header")
-    }
+    resp.ExpectHeader("X-Total-Count", "20")
 }
 ```
 
-## Testing File Uploads
+## Testing Headers
 
 ```go
-func TestFileUpload(t *testing.T) {
-    server := setupTestServer(t)
+func TestCustomHeaders(t *testing.T) {
+    ht := setupTestServer(t)
 
-    // Create multipart form
-    body := &bytes.Buffer{}
-    writer := multipart.NewWriter(body)
-
-    // Add file
-    part, _ := writer.CreateFormFile("file", "test.txt")
-    part.Write([]byte("test file content"))
-    writer.Close()
-
-    req, _ := http.NewRequest("POST", server.URL+"/api/upload", body)
-    req.Header.Set("Content-Type", writer.FormDataContentType())
-
-    client := &http.Client{}
-    resp, _ := client.Do(req)
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
-        t.Errorf("expected status 200, got %d", resp.StatusCode)
-    }
+    ht.GET("/api/data").
+        WithHeader("X-Custom-Header", "custom-value").
+        WithHeaders(map[string]string{
+            "X-Request-ID": "12345",
+            "Accept":       "application/json",
+        }).
+        Do().
+        ExpectOK().
+        ExpectHeader("Content-Type", "application/json")
 }
 ```
 
-## Testing Response Headers
+## Response Assertions Reference
+
+The `HTTPResponse` provides these assertion methods:
 
 ```go
-func TestResponseHeaders(t *testing.T) {
-    server := setupTestServer(t)
+import (
+    "testing"
 
-    resp := makeRequest(t, "GET", server.URL+"/api/users", nil)
-    defer resp.Body.Close()
+    goosetest "github.com/awesome-goose/goose/testing"
+)
 
-    // Check Content-Type
-    contentType := resp.Header.Get("Content-Type")
-    if !strings.Contains(contentType, "application/json") {
-        t.Errorf("expected JSON content type, got %s", contentType)
-    }
+func TestResponseAssertions(t *testing.T) {
+    ht := setupTestServer(t)
 
-    // Check CORS headers
-    cors := resp.Header.Get("Access-Control-Allow-Origin")
-    if cors == "" {
-        t.Error("expected CORS header")
-    }
+    resp := ht.GET("/api/users").Do()
+
+    // Status assertions
+    resp.ExpectOK()                    // 200
+    resp.ExpectCreated()               // 201
+    resp.ExpectNoContent()             // 204
+    resp.ExpectBadRequest()            // 400
+    resp.ExpectUnauthorized()          // 401
+    resp.ExpectForbidden()             // 403
+    resp.ExpectNotFound()              // 404
+    resp.ExpectInternalServerError()   // 500
+    resp.ExpectStatus(202)             // Custom status
+
+    // Header assertions
+    resp.ExpectHeader("Content-Type", "application/json")
+    resp.ExpectContentType("application/json")
+
+    // Body access
+    body := resp.Body()          // []byte
+    bodyStr := resp.BodyString() // string
+
+    // JSON parsing
+    var data map[string]any
+    resp.JSON(&data)
 }
 ```
-
-## Best Practices
-
-1. **Clean up test data** - Reset database between tests
-2. **Use table-driven tests** - For testing multiple scenarios
-3. **Test all HTTP methods** - GET, POST, PUT, DELETE
-4. **Test error responses** - Not just happy paths
-5. **Test authentication** - Both with and without tokens
-6. **Test validation** - Invalid input scenarios
-7. **Check response headers** - Content-Type, CORS, etc.
 
 ## Next Steps
 
-- [Integration Testing](integration.md) - Full module tests
-- [Unit Testing](unit.md) - Component tests
-- [Mocking](mocking.md) - Test doubles
+- [Integration Testing](integration.md) - Test module interactions
+- [E2E Testing](e2e.md) - Test full user flows

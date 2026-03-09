@@ -2,6 +2,16 @@
 
 Test individual components in isolation.
 
+## Import
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+```
+
 ## What is Unit Testing?
 
 Unit tests verify that individual functions and methods work correctly in isolation from the rest of the system.
@@ -16,14 +26,17 @@ package users
 
 import (
     "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
 )
 
 func TestUserService_ValidateEmail(t *testing.T) {
+    test := goosetest.New(t)
     service := &UserService{}
 
     tests := []struct {
-        email    string
-        valid    bool
+        email string
+        valid bool
     }{
         {"user@example.com", true},
         {"invalid", false},
@@ -34,17 +47,21 @@ func TestUserService_ValidateEmail(t *testing.T) {
     for _, tc := range tests {
         t.Run(tc.email, func(t *testing.T) {
             result := service.ValidateEmail(tc.email)
-            if result != tc.valid {
-                t.Errorf("ValidateEmail(%q) = %v, expected %v", tc.email, result, tc.valid)
-            }
+            test.Expect(result).ToEqual(tc.valid)
         })
     }
 }
 ```
 
-### Service with Dependencies
+### Service with Dependencies Using TestContainer
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 // Mock database interface
 type MockDB struct {
     users map[string]*User
@@ -64,32 +81,56 @@ func (m *MockDB) Create(user *User) error {
 }
 
 func TestUserService_GetByID(t *testing.T) {
+    test := goosetest.New(t)
+    container := goosetest.NewTestContainer()
+
     mockDB := &MockDB{
         users: map[string]*User{
             "123": {ID: "123", Email: "test@example.com"},
         },
     }
+    container.Register(mockDB)
 
-    service := &UserService{db: mockDB}
+    service := &UserService{}
+    container.Inject(service)
 
     t.Run("existing user", func(t *testing.T) {
         user, err := service.GetByID("123")
-
-        if err != nil {
-            t.Fatalf("unexpected error: %v", err)
-        }
-        if user.Email != "test@example.com" {
-            t.Errorf("expected email test@example.com, got %s", user.Email)
-        }
+        test.Expect(err).ToBeNil()
+        test.Expect(user.Email).ToEqual("test@example.com")
     })
 
     t.Run("non-existing user", func(t *testing.T) {
         _, err := service.GetByID("999")
-
-        if err == nil {
-            t.Error("expected error for non-existing user")
-        }
+        test.Expect(err).Not().ToBeNil()
     })
+}
+```
+
+### Using ServiceTest Helper
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
+func TestUserServiceWithHelper(t *testing.T) {
+    gt := goosetest.NewGooseTest(t)
+
+    gt.WithContainer(func(c *goosetest.TestContainer) {
+        c.Register(&MockDB{users: make(map[string]*User)})
+    })
+
+    service := &UserService{}
+    st := gt.Service(service)
+
+    // Call method and get results
+    results := st.Run("Create", CreateUserDTO{Email: "test@example.com"})
+
+    gt.Expect(results[0]).Not().ToBeNil() // user
+    gt.Expect(results[1]).ToBeNil()       // error
 }
 ```
 
@@ -98,7 +139,15 @@ func TestUserService_GetByID(t *testing.T) {
 ### Pure Functions
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestCalculateDiscount(t *testing.T) {
+    test := goosetest.New(t)
+
     tests := []struct {
         name     string
         price    float64
@@ -114,11 +163,7 @@ func TestCalculateDiscount(t *testing.T) {
     for _, tc := range tests {
         t.Run(tc.name, func(t *testing.T) {
             result := calculateDiscount(tc.price, tc.percent)
-
-            if result != tc.expected {
-                t.Errorf("calculateDiscount(%.2f, %.2f) = %.2f, expected %.2f",
-                    tc.price, tc.percent, result, tc.expected)
-            }
+            test.Expect(result).ToEqual(tc.expected)
         })
     }
 }
@@ -127,7 +172,14 @@ func TestCalculateDiscount(t *testing.T) {
 ### Complex Logic
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestOrderService_CalculateTotal(t *testing.T) {
+    test := goosetest.New(t)
     service := &OrderService{}
 
     order := &Order{
@@ -145,18 +197,22 @@ func TestOrderService_CalculateTotal(t *testing.T) {
     // Discount: -5
     // Shipping: +10
     // Total: 50
-    expected := 50.00
-
-    if total != expected {
-        t.Errorf("expected total %.2f, got %.2f", expected, total)
-    }
+    test.Expect(total).ToEqual(50.00)
 }
 ```
 
 ## Testing Error Handling
 
 ```go
+import (
+    "strings"
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestUserService_Create_ValidationErrors(t *testing.T) {
+    test := goosetest.New(t)
     service := &UserService{}
 
     tests := []struct {
@@ -195,15 +251,10 @@ func TestUserService_Create_ValidationErrors(t *testing.T) {
             _, err := service.Create(tc.dto)
 
             if tc.expectError {
-                if err == nil {
-                    t.Error("expected error but got nil")
-                } else if !strings.Contains(err.Error(), tc.errorMsg) {
-                    t.Errorf("expected error containing %q, got %q", tc.errorMsg, err.Error())
-                }
+                test.Expect(err).Not().ToBeNil()
+                test.Expect(strings.Contains(err.Error(), tc.errorMsg)).ToBeTrue()
             } else {
-                if err != nil {
-                    t.Errorf("unexpected error: %v", err)
-                }
+                test.Expect(err).ToBeNil()
             }
         })
     }
@@ -213,29 +264,137 @@ func TestUserService_Create_ValidationErrors(t *testing.T) {
 ## Testing Edge Cases
 
 ```go
+import (
+    "math"
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestUserService_EdgeCases(t *testing.T) {
+    test := goosetest.New(t)
     service := &UserService{}
 
     t.Run("nil input", func(t *testing.T) {
         _, err := service.Process(nil)
-        if err == nil {
-            t.Error("expected error for nil input")
-        }
+        test.Expect(err).Not().ToBeNil()
     })
 
     t.Run("empty slice", func(t *testing.T) {
         result := service.ProcessMany([]User{})
-        if len(result) != 0 {
-            t.Error("expected empty result for empty input")
-        }
+        test.Expect(len(result)).ToEqual(0)
     })
 
     t.Run("boundary values", func(t *testing.T) {
         // Test max int
         result := service.Calculate(math.MaxInt64)
-        if result < 0 {
-            t.Error("overflow not handled correctly")
-        }
+        test.Expect(result).ToBeGreaterThan(0)
+    })
+}
+```
+
+## Testing Controllers
+
+Use `ControllerTest` to test controllers with dependency injection:
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
+func TestUserController(t *testing.T) {
+    gt := goosetest.NewGooseTest(t)
+
+    // Set up mock dependencies
+    gt.WithContainer(func(c *goosetest.TestContainer) {
+        c.Register(&MockUserService{})
+    })
+
+    controller := &UserController{}
+    ct := gt.Controller(controller)
+
+    // Create mock context
+    ctx := gt.NewContext()
+    ctx.MockRequest().WithMethod("GET").WithPaths("users", "123")
+
+    // Run controller method
+    ct.Run("GetUser", ctx)
+
+    // Assert response
+    response := ctx.MockResponse()
+    gt.Expect(response.StatusCode()).ToEqual(200)
+}
+```
+
+## Testing Modules
+
+Use `ModuleTest` to verify module structure:
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+    "myapp/app/users"
+)
+
+func TestUsersModule(t *testing.T) {
+    gt := goosetest.NewGooseTest(t)
+    mt := gt.Module(&users.UsersModule{})
+
+    t.Run("should have valid imports", func(t *testing.T) {
+        imports := mt.TestImports()
+        gt.Expect(len(imports)).ToBeGreaterThan(0)
+    })
+
+    t.Run("should have valid exports", func(t *testing.T) {
+        exports := mt.TestExports()
+        gt.Expect(exports).Not().ToBeNil()
+    })
+
+    t.Run("should have valid declarations", func(t *testing.T) {
+        declarations := mt.TestDeclarations()
+        gt.Expect(len(declarations)).ToBeGreaterThan(0)
+    })
+}
+```
+
+## Testing Routes
+
+Use `RouteTest` to verify route configuration:
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+    "myapp/app/users"
+)
+
+func TestUsersRoutes(t *testing.T) {
+    gt := goosetest.NewGooseTest(t)
+    rt := gt.Route(users.ROUTES)
+
+    t.Run("should have GET /users route", func(t *testing.T) {
+        rt.TestRouteExists("GET", []string{"users"})
+    })
+
+    t.Run("should have GET /users/:id route", func(t *testing.T) {
+        rt.TestRouteExists("GET", []string{"users", "123"})
+    })
+
+    t.Run("should have POST /users route", func(t *testing.T) {
+        rt.TestRouteExists("POST", []string{"users"})
+    })
+
+    t.Run("should extract route params", func(t *testing.T) {
+        rt.TestRouteParams("GET", []string{"users", "456"}, map[string]string{"id": "456"})
+    })
+
+    t.Run("should return not found for invalid route", func(t *testing.T) {
+        rt.TestRouteNotFound("DELETE", []string{"invalid"})
     })
 }
 ```
@@ -245,27 +404,36 @@ func TestUserService_EdgeCases(t *testing.T) {
 ### Constructor Tests
 
 ```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestNewUser(t *testing.T) {
+    test := goosetest.New(t)
     user := NewUser("test@example.com", "Test User")
 
-    if user.ID == "" {
-        t.Error("expected ID to be generated")
-    }
-
-    if user.Email != "test@example.com" {
-        t.Errorf("expected email test@example.com, got %s", user.Email)
-    }
-
-    if user.CreatedAt.IsZero() {
-        t.Error("expected CreatedAt to be set")
-    }
+    test.Expect(user.ID).Not().ToEqual("")
+    test.Expect(user.Email).ToEqual("test@example.com")
+    test.Expect(user.CreatedAt.IsZero()).ToBeFalse()
 }
 ```
 
 ### Method Tests
 
 ```go
+import (
+    "testing"
+    "time"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
 func TestUser_IsActive(t *testing.T) {
+    test := goosetest.New(t)
+    now := time.Now()
+
     tests := []struct {
         name     string
         user     User
@@ -283,7 +451,7 @@ func TestUser_IsActive(t *testing.T) {
         },
         {
             name:     "deleted user",
-            user:     User{Active: true, DeletedAt: &time.Time{}},
+            user:     User{Active: true, DeletedAt: &now},
             expected: false,
         },
     }
@@ -291,13 +459,46 @@ func TestUser_IsActive(t *testing.T) {
     for _, tc := range tests {
         t.Run(tc.name, func(t *testing.T) {
             result := tc.user.IsActive()
-            if result != tc.expected {
-                t.Errorf("expected %v, got %v", tc.expected, result)
-            }
+            test.Expect(result).ToEqual(tc.expected)
         })
     }
 }
 ```
+
+## Using Test Fixtures
+
+Generate random test data with `Fixture`:
+
+```go
+import (
+    "testing"
+
+    goosetest "github.com/awesome-goose/goose/testing"
+)
+
+func TestWithRandomData(t *testing.T) {
+    test := goosetest.New(t)
+    fixture := goosetest.NewFixture()
+
+    // Generate random user data
+    user := &User{
+        Email:  fixture.Email(),
+        Name:   fixture.String(10),
+        Age:    fixture.Int(18, 65),
+        Active: fixture.Bool(),
+    }
+
+    // Test with random data
+    err := service.Create(user)
+    test.Expect(err).ToBeNil()
+}
+```
+
+## Next Steps
+
+- [Integration Testing](integration.md) - Test module interactions
+- [HTTP Testing](http.md) - Test API endpoints
+- [E2E Testing](e2e.md) - Test full user flows
 
 ## Testing Concurrency
 
