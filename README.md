@@ -124,14 +124,25 @@ Sections are automatically detected from folder names.
 
 ---
 
-## Keyboard Shortcuts
+## Running Tests
 
-| Shortcut | Action       |
-| -------- | ------------ |
-| `⌘K`     | Open search  |
-| `↑↓`     | Navigate     |
-| `↵`      | Select       |
-| `ESC`    | Close search |
+```bash
+# Run all tests
+go test ./tests/...
+
+# Run with verbose output
+go test ./tests/... -v
+```
+
+---
+
+## Code Coverage
+
+```bash
+# Coverage for all goose packages
+go test ./tests/... -coverpkg=./...
+
+```
 
 ---
 

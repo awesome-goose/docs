@@ -279,10 +279,6 @@ func TestWithHelpers(t *testing.T) {
 ```bash
 # Generate coverage report
 go test -cover ./...
-
-# Generate HTML coverage report
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out -o coverage.html
 ```
 
 ## Best Practices

@@ -3,7 +3,7 @@ module github.com/awesome-goose/docs
 go 1.25.3
 
 require (
-	github.com/awesome-goose/goose v0.0.0
+	github.com/awesome-goose/goose v0.0.6
 	github.com/yuin/goldmark v1.7.16
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 )
