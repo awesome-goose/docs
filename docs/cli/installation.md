@@ -2,27 +2,7 @@
 
 Install the Goose CLI to scaffold applications and generate code.
 
-## Prerequisites
-
-- **Go 1.21+** - Required for running generated projects (not required for CLI installation)
-
-## Quick Install
-
-### Linux / macOS
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/awesome-goose/cli/main/install.sh | bash
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/awesome-goose/cli/main/install.ps1 | iex
-```
-
----
-
-## Manual Installation
+## Installation
 
 Download pre-built binaries from the [GitHub Releases page](https://github.com/awesome-goose/cli/releases).
 
