@@ -78,38 +78,38 @@ func (r *RateLimiter) Remaining(key string) int {
 }
 ```
 
-## Redis-Based Rate Limiter
+## SQL-Backed Rate Limiter
 
-For distributed systems:
+For distributed systems, store the counters in the `kv` module so all
+instances share state via the SQL backend:
 
 ```go
-type RedisRateLimiter struct {
-    kv     *kv.Client `inject:""`
+import "github.com/awesome-goose/goose/modules/kv"
+
+type DistributedRateLimiter struct {
+    kv     *kv.KV `inject:""`
     limit  int
     window time.Duration
 }
 
-func NewRedisRateLimiter(limit int, window time.Duration) *RedisRateLimiter {
-    return &RedisRateLimiter{
-        limit:  limit,
-        window: window,
-    }
+func NewDistributedRateLimiter(limit int, window time.Duration) *DistributedRateLimiter {
+    return &DistributedRateLimiter{limit: limit, window: window}
 }
 
-func (r *RedisRateLimiter) IsAllowed(key string) (bool, int, time.Time) {
+func (r *DistributedRateLimiter) IsAllowed(key string) (bool, int, time.Time) {
     rateKey := "ratelimit:" + key
 
-    // Increment counter
+    // Increment counter (atomic in the kv module)
     count, _ := r.kv.Incr(rateKey)
 
     // Set expiry on first request
     if count == 1 {
-        r.kv.Expire(rateKey, r.window)
+        _, _ = r.kv.Expire(rateKey, r.window)
     }
 
     // Get TTL for reset time
     ttl, _ := r.kv.TTL(rateKey)
-    resetAt := time.Now().Add(ttl)
+    resetAt := time.Now().Add(time.Duration(ttl) * time.Second)
 
     remaining := r.limit - int(count)
     if remaining < 0 {
@@ -357,45 +357,51 @@ func (t *TieredRateLimiter) Handle(ctx types.Context, next types.Next) any {
 }
 ```
 
-## Sliding Window Algorithm
+## Sliding Window via Per-Bucket Counters
 
-More accurate rate limiting:
+The goose `kv` module is SQL-backed and does not expose sorted-set primitives
+(`ZAdd`/`ZCard`/`ZRemRangeByScore`), so a true sorted-set sliding window is
+not available. A reasonable approximation is to bucket counts by sub-window
+and sum the recent buckets:
 
 ```go
 type SlidingWindowLimiter struct {
-    kv     *kv.Client
-    limit  int
-    window time.Duration
+    kv      *kv.KV `inject:""`
+    limit   int
+    window  time.Duration
+    buckets int // e.g. 10 buckets per window for a 10x finer slide
 }
 
 func (l *SlidingWindowLimiter) IsAllowed(key string) bool {
-    now := time.Now()
-    windowStart := now.Add(-l.window)
+    bucketDur := l.window / time.Duration(l.buckets)
+    nowBucket := time.Now().Unix() / int64(bucketDur.Seconds())
 
-    // Use sorted set with timestamp scores
-    rateKey := "ratelimit:" + key
-
-    // Remove old entries
-    l.kv.ZRemRangeByScore(rateKey, "-inf", strconv.FormatInt(windowStart.UnixNano(), 10))
-
-    // Count current entries
-    count, _ := l.kv.ZCard(rateKey)
-
-    if count >= int64(l.limit) {
+    var total int64
+    for i := 0; i < l.buckets; i++ {
+        b := nowBucket - int64(i)
+        rateKey := fmt.Sprintf("ratelimit:%s:%d", key, b)
+        if v, err := l.kv.Get(rateKey); err == nil {
+            if n, ok := v.(int64); ok {
+                total += n
+            }
+        }
+    }
+    if total >= int64(l.limit) {
         return false
     }
 
-    // Add new entry
-    l.kv.ZAdd(rateKey, float64(now.UnixNano()), uuid.New().String())
-    l.kv.Expire(rateKey, l.window)
-
+    currentKey := fmt.Sprintf("ratelimit:%s:%d", key, nowBucket)
+    if _, err := l.kv.Incr(currentKey); err == nil {
+        _, _ = l.kv.Expire(currentKey, l.window+bucketDur)
+    }
     return true
 }
 ```
 
 ## Best Practices
 
-1. **Use Redis** for distributed rate limiting
+1. **Use a distributed kv store** (Postgres/MySQL via the kv module) for
+   multi-instance rate limiting.
 2. **Set appropriate limits** based on your capacity
 3. **Include rate limit headers** in responses
 4. **Use different limits** for different endpoints

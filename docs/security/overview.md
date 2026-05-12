@@ -59,8 +59,8 @@ func (c *Controller) Routes() types.Routes {
 Never hardcode secrets:
 
 ```go
-// Good
-jwtSecret := env.String("JWT_SECRET", "")
+// Good (e is a *env.Env injected as types.Env)
+jwtSecret := e.Get("JWT_SECRET")
 if jwtSecret == "" {
     panic("JWT_SECRET is required")
 }

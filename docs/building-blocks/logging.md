@@ -103,12 +103,12 @@ import "github.com/awesome-goose/goose/log/processors"
 // Console output
 processors.NewConsole()
 
-// File output (directory path - files are created by hour)
+// File output (directory path - files are bucketed by hour)
 processors.NewFileProcessor("./storage/logs")
 // Creates: ./storage/logs/2024/01/15/10.txt
 
-// Syslog output
-// processors.NewSyslog() // If available
+// Syslog output (returns (proc, error) on Unix; no-op on Windows)
+proc, err := processors.NewSyslog("myapp")
 ```
 
 ### With Modifiers
@@ -118,10 +118,10 @@ import "github.com/awesome-goose/goose/log/modifiers"
 
 log.NewLogger(
     []types.Modifier{
-        modifiers.NewColorTagsModifier(), // Colorized output
-        modifiers.NewStackTrace(),         // Include stack traces
-        modifiers.NewSystemInfo(),         // Include system info
-        modifiers.NewUUID(),               // Add UUID to each log
+        modifiers.NewColorTagsModifier(), // Colorized output (Line formatter)
+        modifiers.NewStackTrace(),        // Include stack traces on errors
+        modifiers.NewSystemInfo(),        // Hostname / PID
+        modifiers.NewUUID(),              // Per-record UUID
     },
     formatters.NewLine(),
     processors.NewConsole(),
@@ -241,32 +241,34 @@ func (s *PaymentService) ProcessPayment(orderID string, amount float64) error {
 
 ## Log Rotation
 
-For production, configure log rotation:
-
-```go
-// Using file processor with rotation
-log.NewFileProcessor("/var/log/app.log",
-    log.WithMaxSize(100),      // 100 MB max
-    log.WithMaxBackups(10),    // Keep 10 backups
-    log.WithMaxAge(30),        // 30 days retention
-    log.WithCompress(true),    // Compress old logs
-)
-```
+The built-in `processors.NewFileProcessor(dir)` writes records into a
+date-bucketed directory tree (`/dir/YYYY/MM/DD/HH.txt`), which gives you
+implicit time-based rotation. There is no `WithMaxSize`/`WithMaxBackups`/
+`WithCompress` option on the framework processor — for size-based rotation
+or compression, configure logrotate/journald at the OS level, or pipe to a
+log shipper.
 
 ## Production Configuration
 
 ```go
+import (
+    "github.com/awesome-goose/goose/log"
+    "github.com/awesome-goose/goose/log/formatters"
+    "github.com/awesome-goose/goose/log/modifiers"
+    "github.com/awesome-goose/goose/log/processors"
+    "github.com/awesome-goose/goose/types"
+)
+
 func NewProductionLogger() types.Log {
     return log.NewLog(
         log.AppLogChannel("production"),
-        // File logging with JSON format
         log.NewLogger(
             []types.Modifier{
-                log.NewUuidModifier(),
-                log.NewSystemInfoModifier(),
+                modifiers.NewUUID(),
+                modifiers.NewSystemInfo(),
             },
-            log.NewJsonFormatter(),
-            log.NewFileProcessor("/var/log/app.log"),
+            formatters.NewJSON(),
+            processors.NewFileProcessor("/var/log/app"),
         ),
     )
 }
@@ -278,14 +280,13 @@ func NewProductionLogger() types.Log {
 func NewDevelopmentLogger() types.Log {
     return log.NewLog(
         log.AppLogChannel("development"),
-        // Console logging with colors
         log.NewLogger(
             []types.Modifier{
-                log.NewColorModifier(),
-                log.NewStackTraceModifier(),
+                modifiers.NewColorTagsModifier(),
+                modifiers.NewStackTrace(),
             },
-            log.NewLineFormatter(),
-            log.NewConsoleProcessor(),
+            formatters.NewLine(),
+            processors.NewConsole(),
         ),
     )
 }

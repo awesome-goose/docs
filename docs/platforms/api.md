@@ -65,12 +65,20 @@ type Config struct {
 
 ### Environment Configuration
 
+Build the platform inside an initializer where the `types.Env` is available:
+
 ```go
-platform := api.NewPlatform(
-    api.WithHost(env.String("HOST", "localhost")),
-    api.WithPort(env.Int("PORT", 8080)),
-    api.WithTimeout(env.Int("TIMEOUT", 30)),
-)
+initializers := []func(types.Container) error{
+    func(c types.Container) error {
+        e := env.NewEnv()
+        platform := api.NewPlatform(
+            api.WithHost(e.GetWithDefault("HOST", "localhost")),
+            api.WithPort(e.GetInt("PORT")),
+            api.WithTimeout(e.GetInt("TIMEOUT")),
+        )
+        return c.Register(func() *api.Platform { return platform }, "", true)
+    },
+}
 ```
 
 ## Response Handling

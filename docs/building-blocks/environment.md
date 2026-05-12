@@ -80,6 +80,10 @@ port := e.GetInt("PORT")  // Returns 0 if not found or invalid
 server.Listen(fmt.Sprintf(":%d", port))
 ```
 
+> `GetInt`/`GetBool`/`GetFloat` do not take a default argument. If you need a
+> default for a typed value, use `GetWithDefault` and parse the string, or
+> branch on the typed result.
+
 ### Boolean Values
 
 ```go
@@ -134,12 +138,15 @@ import (
     "github.com/awesome-goose/goose/env/sources"
 )
 
-e := &env.Env{}
+e := env.NewEnv()
 e.FromSources(
-    sources.NewOsEnvSource(),    // OS environment
-    sources.NewFileEnvSource(),   // .env files
+    sources.NewOsEnvSource(),   // OS environment
+    sources.NewFileEnvSource(), // .env files
 )
 ```
+
+> `env.NewEnv()` already applies the OS and file sources. Use `FromSources`
+> to layer additional sources (e.g. Vault) on top.
 
 ### Creating Custom Sources
 

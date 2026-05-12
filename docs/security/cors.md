@@ -188,11 +188,12 @@ cors := NewCORSMiddleware(&CORSConfig{
 ## Environment-Based Configuration
 
 ```go
-func LoadCORSConfig() *CORSConfig {
-    appEnv := env.String("APP_ENV", "development")
+// e is a *env.Env (e.g. env.NewEnv()) obtained from injection.
+func LoadCORSConfig(e *env.Env) *CORSConfig {
+    appEnv := e.GetWithDefault("APP_ENV", "development")
 
     if appEnv == "production" {
-        origins := strings.Split(env.String("CORS_ORIGINS", ""), ",")
+        origins := strings.Split(e.Get("CORS_ORIGINS"), ",")
         return &CORSConfig{
             AllowedOrigins:   origins,
             AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE"},

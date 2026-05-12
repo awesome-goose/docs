@@ -164,10 +164,11 @@ import "github.com/awesome-goose/goose/modules/sql"
 
 func (m *AppModule) Imports() []types.Module {
     return []types.Module{
-        sql.NewModule(
-            sql.WithDriver("sqlite"),
-            sql.WithDatabase("./data/app.db"),
-        ),
+        sql.Root(&sql.Config{
+            Dialect: "sqlite",
+            Name:    "./data/app.db",
+            Sync:    true,
+        }),
     }
 }
 ```

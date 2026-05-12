@@ -146,14 +146,13 @@ func main() {
 }
 
 func loadConfiguration(container types.Container) error {
-    config, err := config.Load("./config")
+    cfg, err := config.NewConfig("./config")
     if err != nil {
         return err
     }
-    container.Register(func() *config.Config {
-        return config
+    return container.Register(func() *config.Config {
+        return cfg
     }, "", true)
-    return nil
 }
 
 func setupLogging(container types.Container) error {

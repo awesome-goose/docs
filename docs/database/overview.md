@@ -1,65 +1,72 @@
 # Database Overview
 
-Goose provides built-in modules for database operations with support for SQL databases, key-value stores, and document databases.
+Goose provides built-in modules for database operations with support for SQL
+databases and key-value stores.
 
 ## Database Modules
 
-| Module            | Description              | Use Case                  |
-| ----------------- | ------------------------ | ------------------------- |
-| [SQL](sql.md)     | GORM-based SQL databases | PostgreSQL, MySQL, SQLite |
-| [KV](kv.md)       | Key-value storage        | Redis, caching, sessions  |
-| [NoSQL](nosql.md) | Document databases       | MongoDB (coming soon)     |
+| Module        | Description                | Use Case                  |
+| ------------- | -------------------------- | ------------------------- |
+| [SQL](sql.md) | GORM-based SQL databases   | PostgreSQL, MySQL, SQLite |
+| [KV](kv.md)   | Persistent key-value store | Sessions, flags, configs  |
 
 ## SQL Database
 
-The SQL module provides GORM integration:
+The SQL module provides GORM integration. Register it as a root or child
+module from your `Imports()`:
 
 ```go
 import (
-    "myapp/app"
-    "github.com/awesome-goose/goose"
     "github.com/awesome-goose/goose/modules/sql"
+    "github.com/awesome-goose/goose/types"
 )
 
-func main() {
-    sqlModule := sql.NewModule(
-        sql.WithDriver("sqlite"),
-        sql.WithDSN("file:app.db?cache=shared&mode=rwc"),
-    )
-
-    stop, err := goose.Start(goose.API(platform, module, []types.Module{
-        sqlModule,
-    }))
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        sql.Root(&sql.Config{
+            Dialect: "sqlite",
+            Name:    "app.db",
+            Sync:    true,
+        }),
+    }
 }
 ```
 
-### Supported Databases
+`sql.Root(cfg)` and `sql.Child(cfg)` are shortcuts for
+`sql.NewModule(cfg, true)` and `sql.NewModule(cfg, false)`.
 
-- SQLite
-- PostgreSQL
-- MySQL/MariaDB
-- SQL Server
+### Supported Dialects
+
+- `sqlite`
+- `postgres`
+- `mysql`
 
 ## Key-Value Store
 
-The KV module provides Redis-compatible storage:
+The KV module persists values through the SQL connection (it uses the same
+GORM database) and adds TTL/group semantics:
 
 ```go
 import "github.com/awesome-goose/goose/modules/kv"
 
-kvModule := kv.NewModule(
-    kv.WithDriver("redis"),
-    kv.WithHost("localhost"),
-    kv.WithPort(6379),
-)
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        sql.Root(&sql.Config{Dialect: "sqlite", Name: "app.db", Sync: true}),
+        kv.NewModule(&kv.Config{
+            Group:           "app",
+            DefaultTTL:      0, // 0 = no expiration
+            CleanupInterval: 0,
+        }, false),
+    }
+}
 ```
 
 ### Use Cases
 
-- Caching
-- Session storage
-- Rate limiting
-- Temporary data
+- Feature flags
+- Long-lived counters
+- Lightweight configuration
+- One-time tokens (with `DefaultTTL`)
 
 ## Database Entities
 
@@ -77,11 +84,17 @@ type User struct {
 
 ## Repository Pattern
 
-Services access databases through injection:
+Services access the database through dependency injection. Inject the
+`*sql.Db` (a thin wrapper around `*gorm.DB`) or the higher-level `*sql.Query`
+helper:
 
 ```go
+import (
+    "github.com/awesome-goose/goose/modules/sql"
+)
+
 type UserService struct {
-    db *gorm.DB `inject:""`
+    db *sql.Db `inject:""`
 }
 
 func (s *UserService) GetAll() []User {
@@ -97,99 +110,58 @@ Use transactions for data integrity:
 
 ```go
 func (s *OrderService) CreateOrder(dto CreateOrderDTO) (*Order, error) {
-    tx := s.db.Begin()
-
-    // Create order
-    order := &Order{...}
-    if err := tx.Create(order).Error; err != nil {
-        tx.Rollback()
-        return nil, err
-    }
-
-    // Create line items
-    for _, item := range dto.Items {
-        lineItem := &LineItem{OrderID: order.ID, ...}
-        if err := tx.Create(lineItem).Error; err != nil {
-            tx.Rollback()
-            return nil, err
+    return s.db.Transaction(func(tx *gorm.DB) error {
+        order := &Order{}
+        if err := tx.Create(order).Error; err != nil {
+            return err
         }
-    }
-
-    tx.Commit()
-    return order, nil
+        for _, item := range dto.Items {
+            li := &LineItem{OrderID: order.ID}
+            if err := tx.Create(li).Error; err != nil {
+                return err
+            }
+        }
+        return nil
+    })
 }
 ```
 
 ## Migrations
 
-Auto-migrate entities on startup:
-
-```go
-func (s *AppService) OnStart() {
-    s.db.AutoMigrate(
-        &User{},
-        &Product{},
-        &Order{},
-    )
-}
-```
+Set `Sync: true` on the SQL config to auto-migrate registered entities at
+startup, or run migrations explicitly via the SQL module's `Migrations`
+slice. See [Migrations](migrations.md) for the explicit form.
 
 ## Configuration
 
-Configure via environment:
+Configure via environment, injecting `types.Env`:
 
 ```env
 # SQL Database
-DB_DRIVER=postgres
+DB_DIALECT=postgres
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=myapp
 DB_USER=postgres
-DB_PASSWORD=secret
-
-# Redis KV
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
-REDIS_DB=0
+DB_PASS=secret
 ```
 
-## Quick Start
-
-1. Add the SQL module:
-
 ```go
-sqlModule := sql.NewModule(
-    sql.WithDriver(env.String("DB_DRIVER", "sqlite")),
-    sql.WithDSN(env.String("DB_DSN", "file:app.db")),
-)
-```
-
-2. Define an entity:
-
-```go
-type Product struct {
-    ID    string  `gorm:"primaryKey"`
-    Name  string
-    Price float64
-}
-```
-
-3. Inject and use:
-
-```go
-type ProductService struct {
-    db *gorm.DB `inject:""`
+type AppModule struct {
+    env types.Env `inject:""`
 }
 
-func (s *ProductService) Create(name string, price float64) *Product {
-    product := &Product{
-        ID:    uuid.New().String(),
-        Name:  name,
-        Price: price,
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        sql.Root(&sql.Config{
+            Dialect: m.env.GetWithDefault("DB_DIALECT", "sqlite"),
+            Host:    m.env.GetWithDefault("DB_HOST", "localhost"),
+            Port:    m.env.GetInt("DB_PORT"),
+            Name:    m.env.GetWithDefault("DB_NAME", "app.db"),
+            User:    m.env.Get("DB_USER"),
+            Pass:    m.env.Get("DB_PASS"),
+        }),
     }
-    s.db.Create(product)
-    return product
 }
 ```
 

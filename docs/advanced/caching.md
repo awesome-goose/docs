@@ -1,99 +1,128 @@
 # Caching
 
-Improve performance with the Goose caching module.
+Improve performance with the Goose `cache` module.
 
 ## Overview
 
 The Cache module provides a SQL-backed caching interface with support for:
 
-- TTL (Time-To-Live) support
-- Cache groups for organization
+- TTL (Time-To-Live)
+- Cache groups for namespacing
 - Automatic cleanup of expired entries
+- Generic `Remember[T]` / `GetAs[T]` helpers
+
+The cache uses the same SQL connection as `sql.Root` — there is no Redis
+client. If you need durable cross-process caching, point the SQL module at
+Postgres or MySQL.
 
 ## Quick Start
 
 ```go
-import "github.com/awesome-goose/goose/modules/cache"
-
-// Configure cache module
-cacheModule := cache.NewModule(
-    cache.WithGroup("app"),
-    cache.WithDefaultTTL(time.Hour),
-    cache.WithCleanupInterval(10 * time.Minute),
+import (
+    "github.com/awesome-goose/goose/modules/cache"
+    "github.com/awesome-goose/goose/modules/sql"
+    "github.com/awesome-goose/goose/types"
 )
 
-// Include in application
-stop, err := goose.Start(goose.API(platform, module, []types.Module{
-    cacheModule,
-}))
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        sql.Root(&sql.Config{Dialect: "sqlite", Name: "app.db", Sync: true}),
+        cache.NewModule(&cache.Config{
+            Group:           "app",
+            DefaultTTL:      time.Hour,
+            CleanupInterval: 10 * time.Minute,
+        }, false),
+    }
+}
 ```
 
 ## Configuration
 
-### Available Options
-
-```go
-cacheModule := cache.NewModule(
-    // Group/namespace for cache entries
-    cache.WithGroup(env.String("CACHE_GROUP", "default")),
-    // Default TTL for entries (default: 5 minutes)
-    cache.WithDefaultTTL(time.Hour),
-    // How often to clean up expired entries (0 = no cleanup)
-    cache.WithCleanupInterval(10 * time.Minute),
-)
-```
-
-### Configuration Struct
-
 ```go
 type Config struct {
-    // Group is the namespace for cache entries
-    Group string
-    // DefaultTTL is the default time-to-live for cache entries
-    DefaultTTL time.Duration
-    // CleanupInterval is how often expired entries are cleaned up
-    CleanupInterval time.Duration
+    Group           string        // Namespace for cache entries
+    DefaultTTL      time.Duration // Default TTL (e.g. 5*time.Minute)
+    CleanupInterval time.Duration // Sweep interval (0 = never)
+}
+```
+
+Functional setters are applied to the config before passing it to
+`NewModule`:
+
+```go
+cfg := &cache.Config{}
+cache.WithGroup("products")(cfg)
+cache.WithDefaultTTL(time.Hour)(cfg)
+cache.WithCleanupInterval(10 * time.Minute)(cfg)
+cache.NewModule(cfg, false)
+```
+
+To read the group from the environment, inject `types.Env` and read it in
+the module's `Imports()`:
+
+```go
+type AppModule struct {
+    env types.Env `inject:""`
+}
+
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        cache.NewModule(&cache.Config{
+            Group:      m.env.GetWithDefault("CACHE_GROUP", "default"),
+            DefaultTTL: time.Hour,
+        }, false),
+    }
 }
 ```
 
 ## Using the Cache
 
-### Inject Cache Client
+### Inject the cache
 
 ```go
+import "github.com/awesome-goose/goose/modules/cache"
+
 type ProductService struct {
-    cache *cache.Client `inject:""`
-    db    *gorm.DB      `inject:""`
+    cache *cache.Cache `inject:""`
+    db    *sql.Db      `inject:""`
 }
 ```
 
-### Basic Operations
+### Set / Get / Delete / Has
 
 ```go
-// Set value
-func (s *ProductService) CacheProduct(product *Product) error {
-    return s.cache.Set("product:"+product.ID, product, time.Hour)
-}
+// Set with TTL (defaults to Config.DefaultTTL if omitted)
+err := s.cache.Set("product:42", product, time.Hour)
 
-// Get value
-func (s *ProductService) GetCachedProduct(id string) (*Product, error) {
-    var product Product
-    err := s.cache.Get("product:"+id, &product)
-    if err != nil {
-        return nil, err
-    }
-    return &product, nil
-}
+// Get returns (any, error). Use cache.GetAs[T] for a typed result.
+v, err := s.cache.Get("product:42")
 
-// Delete value
-func (s *ProductService) InvalidateProduct(id string) error {
-    return s.cache.Delete("product:" + id)
-}
+// Delete returns the number of keys removed
+n, err := s.cache.Delete("product:42", "product:43")
 
-// Check existence
-func (s *ProductService) IsCached(id string) bool {
-    return s.cache.Has("product:" + id)
+// Has returns (true, nil) if the key is present and not expired
+ok, err := s.cache.Has("product:42")
+```
+
+### Typed Get
+
+`cache.GetAs[T]` returns a value of the requested type or
+`cache.ErrKeyNotFound`:
+
+```go
+product, err := cache.GetAs[*Product](s.cache, "product:42")
+if err != nil {
+    return nil, err
 }
+return product, nil
+```
+
+### Invalidate / Flush
+
+```go
+err := s.cache.Invalidate("product:42")   // single key
+n, err := s.cache.InvalidateAll()         // every key in the group
+n, err = s.cache.Flush()                  // alias for InvalidateAll
 ```
 
 ## Caching Patterns
@@ -104,269 +133,141 @@ func (s *ProductService) IsCached(id string) bool {
 func (s *ProductService) GetByID(id string) (*Product, error) {
     cacheKey := "product:" + id
 
-    // Try cache first
-    var product Product
-    if err := s.cache.Get(cacheKey, &product); err == nil {
-        return &product, nil
+    if p, err := cache.GetAs[*Product](s.cache, cacheKey); err == nil {
+        return p, nil
     }
 
-    // Cache miss - fetch from database
-    if err := s.db.First(&product, "id = ?", id).Error; err != nil {
+    var p Product
+    if err := s.db.First(&p, "id = ?", id).Error; err != nil {
         return nil, err
     }
 
-    // Store in cache
-    s.cache.Set(cacheKey, &product, time.Hour)
-
-    return &product, nil
+    _ = s.cache.Set(cacheKey, &p, time.Hour)
+    return &p, nil
 }
 ```
+
+### Remember
+
+`cache.Remember[T]` is a generic helper that returns the cached value or
+populates it via a callback:
+
+```go
+func (s *ProductService) GetByID(id string) (*Product, error) {
+    return cache.Remember[*Product](
+        s.cache,
+        "product:"+id,
+        func() (*Product, error) {
+            var p Product
+            err := s.db.First(&p, "id = ?", id).Error
+            return &p, err
+        },
+        time.Hour, // optional; defaults to Config.DefaultTTL
+    )
+}
+```
+
+There is no `RememberForever`. For long-lived entries, pass a large TTL
+explicitly (e.g. `100*365*24*time.Hour`) or set `Config.DefaultTTL` to zero
+and rely on the absence of expiration.
 
 ### Write-Through
 
 ```go
 func (s *ProductService) Update(id string, dto UpdateProductDTO) (*Product, error) {
-    // Update database
-    var product Product
-    if err := s.db.First(&product, "id = ?", id).Error; err != nil {
+    var p Product
+    if err := s.db.First(&p, "id = ?", id).Error; err != nil {
+        return nil, err
+    }
+    p.Name, p.Price = dto.Name, dto.Price
+    if err := s.db.Save(&p).Error; err != nil {
         return nil, err
     }
 
-    product.Name = dto.Name
-    product.Price = dto.Price
-
-    if err := s.db.Save(&product).Error; err != nil {
-        return nil, err
-    }
-
-    // Update cache immediately
-    s.cache.Set("product:"+id, &product, time.Hour)
-
-    return &product, nil
+    _ = s.cache.Set("product:"+id, &p, time.Hour)
+    return &p, nil
 }
 ```
 
-### Cache Invalidation
+### Invalidate Related Keys
 
 ```go
 func (s *ProductService) Delete(id string) error {
-    // Delete from database
     if err := s.db.Delete(&Product{}, "id = ?", id).Error; err != nil {
         return err
     }
-
-    // Invalidate cache
-    s.cache.Delete("product:" + id)
-
-    // Also invalidate list cache
-    s.cache.Delete("products:list")
-
+    _, _ = s.cache.Delete("product:"+id, "products:list")
     return nil
 }
 ```
 
-## Remember Pattern
+## Group-Scoped Invalidation
 
-Fetch from cache or execute callback:
-
-```go
-func (s *ProductService) GetByID(id string) (*Product, error) {
-    var product Product
-
-    err := s.cache.Remember("product:"+id, time.Hour, &product, func() (interface{}, error) {
-        var p Product
-        err := s.db.First(&p, "id = ?", id).Error
-        return &p, err
-    })
-
-    if err != nil {
-        return nil, err
-    }
-
-    return &product, nil
-}
-```
-
-### Forever Remember
-
-Cache indefinitely (until manually invalidated):
+Goose does not have a `Tags(...)` API. Use the `Group` config option (or a
+per-call key prefix) to namespace related entries, and flush by creating a
+dedicated cache module for that group:
 
 ```go
-func (s *ConfigService) GetSettings() (*Settings, error) {
-    var settings Settings
+// In a module that holds short-lived "category" cache:
+cache.NewModule(&cache.Config{
+    Group:      "category-cache",
+    DefaultTTL: 10 * time.Minute,
+}, false)
 
-    err := s.cache.RememberForever("app:settings", &settings, func() (interface{}, error) {
-        return s.loadSettingsFromDB()
-    })
-
-    return &settings, err
-}
+// Flush only that group:
+n, _ := s.categoryCache.InvalidateAll()
 ```
 
-## Cache Tags
-
-Group related cache entries for bulk invalidation:
-
-```go
-// Set with tags
-func (s *ProductService) CacheProduct(product *Product) error {
-    return s.cache.Tags("products", "category:"+product.CategoryID).Set(
-        "product:"+product.ID,
-        product,
-        time.Hour,
-    )
-}
-
-// Invalidate by tag
-func (s *ProductService) InvalidateProductsByCategory(categoryID string) error {
-    return s.cache.Tags("category:" + categoryID).Flush()
-}
-
-// Invalidate all products
-func (s *ProductService) InvalidateAllProducts() error {
-    return s.cache.Tags("products").Flush()
-}
-```
-
-## Caching Lists
-
-```go
-func (s *ProductService) GetAll() ([]Product, error) {
-    cacheKey := "products:list"
-
-    // Try cache
-    var products []Product
-    if err := s.cache.Get(cacheKey, &products); err == nil {
-        return products, nil
-    }
-
-    // Fetch from database
-    s.db.Find(&products)
-
-    // Cache the list
-    s.cache.Set(cacheKey, products, 30*time.Minute)
-
-    return products, nil
-}
-```
-
-## Pagination Caching
+## Caching Lists / Paginated Results
 
 ```go
 func (s *ProductService) GetPaginated(page, limit int) ([]Product, error) {
-    cacheKey := fmt.Sprintf("products:page:%d:limit:%d", page, limit)
-
-    var products []Product
-    if err := s.cache.Get(cacheKey, &products); err == nil {
-        return products, nil
-    }
-
-    // Fetch from database
-    offset := (page - 1) * limit
-    s.db.Offset(offset).Limit(limit).Find(&products)
-
-    // Cache with shorter TTL for paginated results
-    s.cache.Set(cacheKey, products, 5*time.Minute)
-
-    return products, nil
+    key := fmt.Sprintf("products:page:%d:limit:%d", page, limit)
+    return cache.Remember[[]Product](
+        s.cache,
+        key,
+        func() ([]Product, error) {
+            var ps []Product
+            offset := (page - 1) * limit
+            return ps, s.db.Offset(offset).Limit(limit).Find(&ps).Error
+        },
+        5*time.Minute,
+    )
 }
 ```
 
-## HTTP Response Caching
+## What this module does NOT provide
 
-Cache entire API responses:
-
-```go
-type CacheMiddleware struct {
-    cache *cache.Client `inject:""`
-    ttl   time.Duration
-}
-
-func (m *CacheMiddleware) Handle(ctx types.Context, next types.Next) any {
-    // Only cache GET requests
-    if ctx.Method() != "GET" {
-        return next()
-    }
-
-    cacheKey := "response:" + ctx.Path()
-
-    // Try cache
-    var cached map[string]interface{}
-    if err := m.cache.Get(cacheKey, &cached); err == nil {
-        ctx.SetHeader("X-Cache", "HIT")
-        return cached
-    }
-
-    // Execute request
-    response := next()
-
-    // Cache response
-    m.cache.Set(cacheKey, response, m.ttl)
-    ctx.SetHeader("X-Cache", "MISS")
-
-    return response
-}
-```
-
-## Atomic Operations
-
-```go
-// Increment counter
-func (s *StatsService) IncrementViews(postID string) (int64, error) {
-    return s.cache.Increment("views:"+postID, 1)
-}
-
-// Decrement counter
-func (s *StatsService) DecrementStock(productID string) (int64, error) {
-    return s.cache.Decrement("stock:"+productID, 1)
-}
-```
-
-## Distributed Locking
-
-Prevent concurrent operations:
-
-```go
-func (s *OrderService) ProcessOrder(orderID string) error {
-    lockKey := "lock:order:" + orderID
-
-    // Acquire lock
-    acquired, err := s.cache.Lock(lockKey, 30*time.Second)
-    if err != nil || !acquired {
-        return fmt.Errorf("order already being processed")
-    }
-    defer s.cache.Unlock(lockKey)
-
-    // Process order safely
-    return s.doProcessOrder(orderID)
-}
-```
+- No `Tags(...).Set/Flush` API — use `Group` for namespacing.
+- No `RememberForever` — pass a long explicit TTL or rely on no expiration.
+- No `Increment`/`Decrement` — see the [KV module](../database/kv.md) for
+  atomic counters.
+- No `Lock`/`Unlock` (distributed locks) — implement via `kv.SetNX` if
+  needed.
+- The type is `*cache.Cache`, not `*cache.Client`.
 
 ## Best Practices
 
-1. **Set appropriate TTLs** based on data volatility
-2. **Use cache prefixes** to namespace keys
-3. **Invalidate on writes** to prevent stale data
-4. **Use tags** for related cache invalidation
-5. **Handle cache misses gracefully**
-6. **Monitor hit/miss ratios**
-7. **Don't cache sensitive data** unnecessarily
+1. Set TTLs that match data volatility.
+2. Use a `Group` per logical cache; flush via that module's cache instance.
+3. Invalidate on writes to prevent stale data.
+4. Handle cache misses gracefully — they are normal.
+5. Don't cache sensitive data without a deliberate decision.
 
 ## Cache Warming
 
-Pre-populate cache on startup:
+Pre-populate the cache on startup using `OnStart`:
 
 ```go
 type CacheWarmer struct {
-    cache          *cache.Client   `inject:""`
-    productService *ProductService `inject:""`
+    cache *cache.Cache   `inject:""`
+    svc   *ProductService `inject:""`
 }
 
 func (w *CacheWarmer) OnStart() {
-    // Warm frequently accessed data
-    products, _ := w.productService.GetPopularProducts()
-    for _, product := range products {
-        w.cache.Set("product:"+product.ID, product, time.Hour)
+    products, _ := w.svc.GetPopularProducts()
+    for _, p := range products {
+        _ = w.cache.Set("product:"+p.ID, p, time.Hour)
     }
 }
 ```
@@ -374,5 +275,4 @@ func (w *CacheWarmer) OnStart() {
 ## Next Steps
 
 - [Queues](queues.md) - Background job processing
-- [KV Store](../database/kv.md) - Key-value operations
-- [Performance](../deployment/performance.md) - Optimization tips
+- [KV Store](../database/kv.md) - Key-value operations and counters

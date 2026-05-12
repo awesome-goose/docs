@@ -1,476 +1,279 @@
 # Background Queues
 
-Process background jobs asynchronously with the Goose queues module.
+Process background jobs asynchronously with the Goose `queues` module.
 
 ## Overview
 
-The Queues module enables SQL-backed background job processing for:
+The Queues module is a SQL-backed job queue with an auto-scaling worker
+pool, optional retries, exponential backoff, and stale-job recovery. Use it
+for: sending emails, processing uploads, generating reports, external API
+calls, and other resource-intensive operations.
 
-- Sending emails
-- Processing uploads
-- Generating reports
-- External API calls
-- Resource-intensive operations
+The queue persists in the SQL connection registered by the SQL module — it
+is **not** Redis-backed.
 
 ## Quick Start
 
 ```go
-import "github.com/awesome-goose/goose/modules/queues"
+import (
+    "context"
 
-// Configure queues module
-queuesModule := queues.NewModule(
-    queues.WithQueue("default"),
-    queues.WithPollInterval(5 * time.Second),
-    queues.WithDefaultRetryLimit(3),
+    "github.com/awesome-goose/goose/modules/queues"
+    "github.com/awesome-goose/goose/modules/sql"
+    "github.com/awesome-goose/goose/types"
 )
 
-// Include in application
-stop, err := goose.Start(goose.API(platform, module, []types.Module{
-    queuesModule,
-}))
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        sql.Root(&sql.Config{Dialect: "sqlite", Name: "app.db", Sync: true}),
+        queues.Root(queues.DefaultConfig(), m.queueHandlers()...),
+    }
+}
+
+func (m *AppModule) queueHandlers() []*queues.JobHandler {
+    return []*queues.JobHandler{
+        queues.NewSimpleHandler("emails", "send-welcome", func(j *queues.QueueJob) (any, error) {
+            data, err := queues.GetJobData[WelcomeEmail](j)
+            if err != nil {
+                return nil, err
+            }
+            return nil, sendWelcomeEmail(data.UserID)
+        }).WithMinWorkers(1).WithMaxWorkers(4),
+    }
+}
 ```
+
+`queues.Root(cfg, handlers...)` is shorthand for
+`queues.NewModule(cfg, handlers, true)`; `queues.Child(handlers...)` reuses
+the root queue from a child module.
 
 ## Configuration
 
-### Available Options
-
-```go
-queuesModule := queues.NewModule(
-    // Default queue name for jobs
-    queues.WithQueue("default"),
-    // Number of retries for failed jobs
-    queues.WithDefaultRetryLimit(3),
-    // Delay between retries (milliseconds)
-    queues.WithDefaultRetryDelay(1000),
-    // How often workers poll for new jobs
-    queues.WithPollInterval(5 * time.Second),
-    // How often expired/completed jobs are cleaned up
-    queues.WithCleanupInterval(time.Hour),
-    // How long to keep completed/failed jobs
-    queues.WithRetentionPeriod(7 * 24 * time.Hour),
-)
-```
-
-### Configuration Struct
-
 ```go
 type Config struct {
-    Queue                  string        // Default queue name
-    DefaultRetryLimit      int           // Default retry count
-    DefaultRetryDelay      int           // Delay between retries (ms)
-    PollInterval           time.Duration // Job polling interval
-    CleanupInterval        time.Duration // Cleanup frequency
-    RetentionPeriod        time.Duration // Keep completed jobs
-    StaleJobTimeout        time.Duration // Recovery timeout
+    Queue                  string        // Default queue name for new jobs
+    DefaultRetryLimit      int           // Retries per failed job (default 3)
+    DefaultRetryDelay      int           // ms between retries
+    PollInterval           time.Duration // Worker poll cadence
+    CleanupInterval        time.Duration // Sweep frequency (0 = never)
+    RetentionPeriod        time.Duration // Keep completed/failed jobs (default 7d)
+    StaleJobTimeout        time.Duration // Recover jobs stuck in_progress (default 5m)
     EnableStaleJobRecovery bool          // Auto-recover stale jobs
 }
+
+cfg := queues.DefaultConfig()
+queues.WithQueue("default")(cfg)
+queues.WithPollInterval(5 * time.Second)(cfg)
+queues.WithDefaultRetryLimit(3)(cfg)
 ```
 
-## Defining Jobs
+There is **no `Workers` field** and no `WithDriver`/`WithWorkers` option —
+worker scaling is per-handler via `WithMinWorkers`/`WithMaxWorkers`.
 
-### Basic Job
+## Handlers
+
+A `*queues.JobHandler` describes how to run a particular `queue:job`. It
+includes the function plus worker-pool settings:
 
 ```go
-package jobs
+type JobHandler struct {
+    Queue                 string         // queue name (e.g. "emails")
+    Job                   string         // job type (e.g. "send-welcome")
+    Handler               JobHandlerFn   // func(ctx, *QueueJob) (any, error)
+    MinWorkers, MaxWorkers int
+    PollIntervalMs        int
+    IdleThreshold         int            // ticks of inactivity before scale-down
+    TimeoutMs             int            // per-execution timeout (default 60_000)
+    UseExponentialBackoff bool
+}
+```
 
-import (
-    "github.com/awesome-goose/goose/modules/queues"
-)
+### Constructors
 
-type SendEmailJob struct {
+```go
+// Plain handler
+h := queues.NewHandler("emails", "send-welcome",
+    func(ctx context.Context, j *queues.QueueJob) (any, error) {
+        return nil, deliver(j)
+    })
+
+// Simple handler (no ctx)
+h := queues.NewSimpleHandler("emails", "send-welcome",
+    func(j *queues.QueueJob) (any, error) {
+        return nil, deliver(j)
+    })
+
+// Fluent worker config
+h.WithMinWorkers(1).WithMaxWorkers(8).
+   WithPollInterval(500).
+   WithIdleThreshold(10).
+   WithTimeout(30_000).
+   WithExponentialBackoff()
+```
+
+### Typed handlers
+
+`queues.NewTypedHandler[T]` decodes the persisted JSON payload for you:
+
+```go
+type SendEmail struct {
     To      string `json:"to"`
     Subject string `json:"subject"`
-    Body    string `json:"body"`
 }
 
-func (j *SendEmailJob) Handle(ctx queues.JobContext) error {
-    // Send the email
-    return sendEmail(j.To, j.Subject, j.Body)
-}
+th := queues.NewTypedHandler[SendEmail]("emails", "send",
+    func(ctx context.Context, data SendEmail, job *queues.QueueJob) (any, error) {
+        return nil, sendEmail(data.To, data.Subject)
+    })
 
-func (j *SendEmailJob) Queue() string {
-    return "emails"
-}
+handlers := []*queues.JobHandler{th.ToJobHandler()}
 ```
 
-### Job with Dependencies
+## Pushing Jobs
 
-```go
-type ProcessOrderJob struct {
-    OrderID string `json:"order_id"`
-}
-
-func (j *ProcessOrderJob) Handle(ctx queues.JobContext) error {
-    // Get services from context
-    orderService := ctx.Get("orderService").(*OrderService)
-
-    // Process the order
-    return orderService.Process(j.OrderID)
-}
-
-func (j *ProcessOrderJob) Queue() string {
-    return "orders"
-}
-
-func (j *ProcessOrderJob) Timeout() time.Duration {
-    return 5 * time.Minute
-}
-```
-
-## Dispatching Jobs
-
-### Inject Queue Client
+Inject `*queues.Queue` and call one of the push methods:
 
 ```go
 type OrderController struct {
-    queue        *queues.Client   `inject:""`
-    orderService *OrderService    `inject:""`
+    queue *queues.Queue `inject:""`
 }
-```
 
-### Dispatch Immediately
-
-```go
 func (c *OrderController) Create(ctx types.Context) any {
     var dto CreateOrderDTO
-    ctx.Bind(&dto)
+    _ = ctx.Bind(&dto)
 
-    // Create order
-    order, err := c.orderService.Create(dto)
-    if err != nil {
-        return ctx.Status(500).JSON(map[string]string{"error": err.Error()})
-    }
+    // Push immediately to the default queue
+    job, _ := c.queue.Push("emails", "send-welcome",
+        SendEmail{To: dto.Email, Subject: "Welcome"}, nil)
 
-    // Dispatch background job
-    c.queue.Dispatch(&ProcessOrderJob{OrderID: order.ID})
-
-    return ctx.Status(201).JSON(order)
+    return map[string]string{"job_id": job.Id}
 }
 ```
 
-### Dispatch with Delay
+### Push with delay or at a specific time
 
 ```go
-// Process 5 minutes from now
-c.queue.Dispatch(&SendReminderJob{
-    UserID: user.ID,
-}).Delay(5 * time.Minute)
+// Push 5 minutes from now
+job, _ := c.queue.Delay("emails", "reminder", payload, 5*time.Minute, nil)
 
-// Process at specific time
-c.queue.Dispatch(&SendReportJob{
-    ReportID: report.ID,
-}).At(time.Date(2024, 1, 1, 9, 0, 0, 0, time.UTC))
+// Push at an absolute time
+job, _ = c.queue.At("reports", "monthly", payload, time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC), nil)
+
+// Fluent later-style API
+job, _ = c.queue.Later("emails", "reminder", payload, nil).InMinutes(5)
 ```
 
-### Dispatch to Specific Queue
+### Push a batch
 
 ```go
-c.queue.Dispatch(&SendEmailJob{
-    To:      user.Email,
-    Subject: "Welcome!",
-    Body:    "Welcome to our platform.",
-}).OnQueue("emails")
+batch := []queues.BatchJob{
+    {Name: "send", Data: SendEmail{To: "a@example.com"}},
+    {Name: "send", Data: SendEmail{To: "b@example.com"}},
+}
+jobs, _ := c.queue.PushBatch("emails", batch)
 ```
 
-## Job Configuration
+## Per-Job Configuration
 
-### Retries
+Pass a `*queues.JobConfig` to `Push`/`Delay`/`At` to override defaults for a
+single job:
 
 ```go
-type ProcessPaymentJob struct {
-    PaymentID string `json:"payment_id"`
-}
-
-func (j *ProcessPaymentJob) Handle(ctx queues.JobContext) error {
-    return processPayment(j.PaymentID)
-}
-
-// Retry 3 times on failure
-func (j *ProcessPaymentJob) MaxRetries() int {
-    return 3
-}
-
-// Wait between retries
-func (j *ProcessPaymentJob) RetryDelay() time.Duration {
-    return 30 * time.Second
-}
+priority := 10
+c.queue.Push("emails", "send-welcome", payload, &queues.JobConfig{
+    Priority:   priority,
+    RetryLimit: 5,
+    RetryDelay: 5_000, // ms
+    TimeoutMs:  30_000,
+    Singleton:  true,  // skip if another job with same name is pending
+})
 ```
 
-### Timeout
+## Error Handling and Retries
+
+When a handler returns an error, the runner retries up to
+`RetryLimit + 1` attempts. Between retries it sleeps `RetryDelay` ms — or
+doubles the delay (capped) if the handler enabled `WithExponentialBackoff`.
+Jobs that exhaust their retries are recorded with `status = "failed"`.
+
+You can re-queue a failed job manually:
 
 ```go
-func (j *ExportDataJob) Timeout() time.Duration {
-    return 10 * time.Minute
-}
+err := c.queue.Retry(jobID)
 ```
 
-### Priority
+## Monitoring
 
 ```go
-func (j *UrgentNotificationJob) Priority() int {
-    return 10 // Higher priority
-}
+m := c.queue.GetMetrics()
+// m.TotalProcessed, m.TotalSucceeded, m.TotalFailed, m.TotalRetried, m.ProcessingTimes
 
-func (j *RegularNotificationJob) Priority() int {
-    return 1 // Default priority
-}
+job, _   := c.queue.GetJob(jobID)
+logs, _  := c.queue.GetJobLogs(jobID)
+jobs, _  := c.queue.ListJobs("emails", queues.JobStatusNew, 100)
+
+_ = c.queue.PauseQueue("emails")
+_ = c.queue.ResumeQueue("emails")
+_ = c.queue.Cancel(jobID)
 ```
 
-## Error Handling
+## Practical Examples
 
-### Handle Failures
-
-```go
-type SendEmailJob struct {
-    To      string `json:"to"`
-    Subject string `json:"subject"`
-}
-
-func (j *SendEmailJob) Handle(ctx queues.JobContext) error {
-    err := sendEmail(j.To, j.Subject)
-    if err != nil {
-        return fmt.Errorf("failed to send email: %w", err)
-    }
-    return nil
-}
-
-// Called when all retries exhausted
-func (j *SendEmailJob) OnFailure(ctx queues.JobContext, err error) {
-    log.Printf("Email to %s failed after retries: %v", j.To, err)
-    // Store failed job for manual review
-    storeFailedJob(j, err)
-}
-```
-
-### Conditional Retry
+### Welcome email
 
 ```go
-func (j *APICallJob) ShouldRetry(err error) bool {
-    // Don't retry on validation errors
-    if errors.Is(err, ErrValidation) {
-        return false
-    }
-    // Retry on network errors
-    return true
+type WelcomeEmail struct {
+    UserID string `json:"user_id"`
 }
-```
 
-## Job Chaining
-
-Execute jobs in sequence:
-
-```go
-func (c *Controller) ProcessOrder(ctx types.Context) any {
-    orderID := ctx.Param("id")
-
-    // Chain jobs
-    c.queue.Chain(
-        &ValidateOrderJob{OrderID: orderID},
-        &ProcessPaymentJob{OrderID: orderID},
-        &SendConfirmationJob{OrderID: orderID},
-        &UpdateInventoryJob{OrderID: orderID},
-    ).Dispatch()
-
-    return map[string]string{"status": "processing"}
-}
-```
-
-## Job Batching
-
-Process multiple jobs together:
-
-```go
-func (c *Controller) SendBulkEmails(ctx types.Context) any {
-    var dto BulkEmailDTO
-    ctx.Bind(&dto)
-
-    // Create batch
-    jobs := make([]queues.Job, len(dto.Recipients))
-    for i, recipient := range dto.Recipients {
-        jobs[i] = &SendEmailJob{
-            To:      recipient,
-            Subject: dto.Subject,
-            Body:    dto.Body,
+h := queues.NewTypedHandler[WelcomeEmail]("emails", "send-welcome",
+    func(ctx context.Context, data WelcomeEmail, job *queues.QueueJob) (any, error) {
+        user, err := userService.GetByID(data.UserID)
+        if err != nil {
+            return nil, err
         }
-    }
-
-    // Dispatch batch
-    batch := c.queue.Batch(jobs...).OnQueue("emails")
-
-    // Optional: callback when all complete
-    batch.Then(&BatchCompleteJob{BatchID: batch.ID})
-
-    batch.Dispatch()
-
-    return map[string]string{"batch_id": batch.ID}
-}
+        return nil, sendWelcomeEmail(user.Email, user.Name)
+    }).ToJobHandler().WithMinWorkers(2).WithMaxWorkers(8)
 ```
 
-## Worker Configuration
-
-### Register Job Handlers
+### File processing
 
 ```go
-// In your module
-func (m *AppModule) Declarations() []any {
-    return []any{
-        // Register jobs
-        &SendEmailJob{},
-        &ProcessOrderJob{},
-        &ExportDataJob{},
-    }
-}
+h := queues.NewSimpleHandler("uploads", "process",
+    func(j *queues.QueueJob) (any, error) {
+        return nil, processUpload(j) // resize, convert, etc.
+    }).
+    WithTimeout(30 * 60 * 1000). // 30 min
+    WithMaxWorkers(2)
 ```
 
-### Configure Workers
+### Report generation
 
 ```go
-queuesModule := queues.NewModule(
-    queues.WithDriver("redis"),
-    queues.WithQueues("default", "emails", "exports"),
-    queues.WithWorkers(map[string]int{
-        "default": 2,  // 2 workers for default queue
-        "emails":  4,  // 4 workers for emails
-        "exports": 1,  // 1 worker for exports (sequential)
-    }),
-)
-```
-
-## Monitoring Jobs
-
-### Job Status
-
-```go
-func (c *Controller) GetJobStatus(ctx types.Context) any {
-    jobID := ctx.Param("id")
-
-    status, err := c.queue.GetStatus(jobID)
-    if err != nil {
-        return ctx.Status(404).JSON(map[string]string{"error": "Job not found"})
-    }
-
-    return map[string]interface{}{
-        "id":         status.ID,
-        "status":     status.Status, // pending, processing, completed, failed
-        "attempts":   status.Attempts,
-        "created_at": status.CreatedAt,
-        "started_at": status.StartedAt,
-        "finished_at": status.FinishedAt,
-    }
-}
-```
-
-### Queue Statistics
-
-```go
-func (c *AdminController) QueueStats(ctx types.Context) any {
-    stats := c.queue.Stats()
-
-    return map[string]interface{}{
-        "queues": map[string]interface{}{
-            "default": map[string]int64{
-                "pending":    stats["default"].Pending,
-                "processing": stats["default"].Processing,
-                "completed":  stats["default"].Completed,
-                "failed":     stats["default"].Failed,
-            },
-            "emails": map[string]int64{
-                "pending":    stats["emails"].Pending,
-                "processing": stats["emails"].Processing,
-                "completed":  stats["emails"].Completed,
-                "failed":     stats["emails"].Failed,
-            },
-        },
-    }
-}
-```
-
-## Job Middleware
-
-Add middleware to jobs:
-
-```go
-type LoggingJobMiddleware struct{}
-
-func (m *LoggingJobMiddleware) Handle(ctx queues.JobContext, next func() error) error {
-    start := time.Now()
-    log.Printf("Job %s starting", ctx.JobName())
-
-    err := next()
-
-    duration := time.Since(start)
-    if err != nil {
-        log.Printf("Job %s failed after %v: %v", ctx.JobName(), duration, err)
-    } else {
-        log.Printf("Job %s completed in %v", ctx.JobName(), duration)
-    }
-
-    return err
-}
+h := queues.NewSimpleHandler("reports", "generate",
+    func(j *queues.QueueJob) (any, error) {
+        return nil, runReport(j)
+    }).
+    WithMaxWorkers(1) // serialize heavy jobs
 ```
 
 ## Best Practices
 
-1. **Keep jobs small** - Do one thing per job
-2. **Make jobs idempotent** - Safe to run multiple times
-3. **Set appropriate timeouts** - Prevent hung jobs
-4. **Use retries** for transient failures
-5. **Monitor queue depth** - Alert on backlogs
-6. **Separate queues** by priority/type
-7. **Log job activity** for debugging
+1. **Keep jobs small and idempotent** — they may run more than once.
+2. **Set a sensible `TimeoutMs`** on long-running handlers.
+3. **Separate queues** by latency requirement (e.g. `emails` vs `reports`).
+4. **Use `Singleton`** for jobs that must not run concurrently.
+5. **Enable `EnableStaleJobRecovery`** in multi-instance deployments.
+6. **Watch `GetMetrics()`** for failure spikes; expose an admin endpoint.
 
-## Common Use Cases
+## What this module does NOT provide
 
-### Email Sending
-
-```go
-type WelcomeEmailJob struct {
-    UserID string `json:"user_id"`
-}
-
-func (j *WelcomeEmailJob) Handle(ctx queues.JobContext) error {
-    userService := ctx.Get("userService").(*UserService)
-    user, _ := userService.GetByID(j.UserID)
-
-    return sendWelcomeEmail(user.Email, user.Name)
-}
-```
-
-### File Processing
-
-```go
-type ProcessUploadJob struct {
-    FileID string `json:"file_id"`
-}
-
-func (j *ProcessUploadJob) Handle(ctx queues.JobContext) error {
-    // Download file
-    // Process (resize, convert, etc.)
-    // Upload to storage
-    // Update database
-    return nil
-}
-
-func (j *ProcessUploadJob) Timeout() time.Duration {
-    return 30 * time.Minute
-}
-```
-
-### Report Generation
-
-```go
-type GenerateReportJob struct {
-    ReportID string `json:"report_id"`
-    UserID   string `json:"user_id"`
-}
-
-func (j *GenerateReportJob) Handle(ctx queues.JobContext) error {
-    // Generate report
-    // Save to storage
-    // Notify user
-    return nil
-}
-```
+- No Redis backend. Jobs persist via the SQL module.
+- No `Dispatch().Delay()/At()/OnQueue()` chained DSL. Use `Push`, `Delay`,
+  or `At` directly.
+- No `Chain`/`Batch.Then` higher-order composition primitives — chain via
+  pushing the next job from inside the previous handler.
+- The type is `*queues.Queue`, not `*queues.Client`.
 
 ## Next Steps
 

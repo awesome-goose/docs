@@ -1,56 +1,112 @@
 # Cron Jobs (Scheduled Tasks)
 
-Schedule recurring tasks with the Goose cron module.
+Schedule recurring tasks with the Goose `cron` module.
 
 ## Overview
 
-The Cron module enables time-based job scheduling:
+The Cron module runs handlers on a cron schedule. Each handler is registered
+under a `group:name` pair, persisted in the SQL backend, and picked up by a
+runner that ticks at a configurable interval.
 
-- Run tasks at specific times
-- Periodic data cleanup
-- Report generation
-- Health checks
-- External API synchronization
+Use it for: periodic data cleanup, report generation, health checks, and
+external API synchronization.
 
 ## Quick Start
 
 ```go
-import "github.com/awesome-goose/goose/modules/cron"
+import (
+    "context"
 
-// Configure cron module
-cronModule := cron.NewModule()
+    "github.com/awesome-goose/goose/modules/cron"
+    "github.com/awesome-goose/goose/modules/sql"
+    "github.com/awesome-goose/goose/types"
+)
 
-// Include in application
-stop, err := goose.Start(goose.API(platform, module, []types.Module{
-    cronModule,
-}))
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        sql.Root(&sql.Config{Dialect: "sqlite", Name: "app.db", Sync: true}),
+        cron.NewModule(&cron.Config{
+            TickInterval:           time.Minute,
+            Timezone:               "Etc/UTC",
+            EnableStaleJobRecovery: true,
+        }, m.cronHandlers(), false),
+    }
+}
+
+func (m *AppModule) cronHandlers() []*cron.CronHandler {
+    return []*cron.CronHandler{
+        cron.NewSimpleHandler("system", "cleanup", "0 2 * * *", func(j *cron.CronJob) (any, error) {
+            return nil, runDailyCleanup()
+        }),
+    }
+}
 ```
 
-## Defining Scheduled Tasks
+`cron.NewModule(config, handlers, isRoot)` takes the handler slice
+explicitly. The runner is started by the framework — your module just
+provides the handlers.
 
-### Basic Cron Job
+## Handlers
+
+A `*cron.CronHandler` is the unit of scheduling:
 
 ```go
-package jobs
-
-import "github.com/awesome-goose/goose/modules/cron"
-
-type CleanupJob struct {
-    db *gorm.DB `inject:""`
-}
-
-func (j *CleanupJob) Handle() error {
-    // Delete old records
-    return j.db.Where("created_at < ?", time.Now().AddDate(0, -6, 0)).Delete(&Log{}).Error
-}
-
-// Run every day at midnight
-func (j *CleanupJob) Schedule() string {
-    return "0 0 * * *"
+type CronHandler struct {
+    Group                 string                // logical group (e.g. "billing")
+    Name                  string                // unique within the group
+    Pattern               string                // cron expression
+    Handler               CronHandlerFn         // func(ctx, *CronJob) (any, error)
+    Config                *CronConfig           // optional priority/retry settings
+    TimeoutMs             int                   // execution timeout (default 60_000)
+    UseExponentialBackoff bool                  // retry backoff strategy
 }
 ```
 
-### Cron Expression Format
+### Constructors
+
+```go
+// With ctx-aware handler:
+h := cron.NewHandler("system", "cleanup", "0 2 * * *",
+    func(ctx context.Context, j *cron.CronJob) (any, error) {
+        return runCleanup(ctx)
+    })
+
+// Without ctx (convenience):
+h := cron.NewSimpleHandler("system", "ping", "*/5 * * * *",
+    func(j *cron.CronJob) (any, error) {
+        return nil, ping()
+    })
+```
+
+### Fluent configuration
+
+```go
+h := cron.NewHandler("billing", "daily-report", "0 6 * * *", reportFn).
+    WithPriority(10).
+    WithRetryLimit(3).
+    WithRetryDelay(5_000).             // ms (capped at 15_000)
+    WithTimeout(10 * 60 * 1000).       // 10 minute timeout
+    WithExponentialBackoff()
+```
+
+### Typed handlers
+
+Use `cron.NewTypedHandler[T]` when each job carries a JSON config payload:
+
+```go
+type ReportArgs struct {
+    Region string `json:"region"`
+}
+
+th := cron.NewTypedHandler[ReportArgs]("billing", "regional-report", "0 6 * * *",
+    func(ctx context.Context, args ReportArgs, job *cron.CronJob) (any, error) {
+        return generateReport(args.Region)
+    })
+
+handlers := []*cron.CronHandler{th.ToCronHandler()}
+```
+
+## Cron Expression Format
 
 ```
 ┌───────────── minute (0 - 59)
@@ -62,383 +118,147 @@ func (j *CleanupJob) Schedule() string {
 * * * * *
 ```
 
-### Common Schedules
+Common patterns:
 
 ```go
-// Every minute
-func (j *Job) Schedule() string { return "* * * * *" }
-
-// Every 5 minutes
-func (j *Job) Schedule() string { return "*/5 * * * *" }
-
-// Every hour
-func (j *Job) Schedule() string { return "0 * * * *" }
-
-// Every day at midnight
-func (j *Job) Schedule() string { return "0 0 * * *" }
-
-// Every day at 9 AM
-func (j *Job) Schedule() string { return "0 9 * * *" }
-
-// Every Monday at 9 AM
-func (j *Job) Schedule() string { return "0 9 * * 1" }
-
-// First day of every month at midnight
-func (j *Job) Schedule() string { return "0 0 1 * *" }
-
-// Every weekday at 6 PM
-func (j *Job) Schedule() string { return "0 18 * * 1-5" }
+"* * * * *"       // every minute
+"*/5 * * * *"     // every 5 minutes
+"0 * * * *"       // every hour
+"0 0 * * *"       // every day at midnight
+"0 9 * * 1"       // Mondays at 9 AM
+"0 0 1 * *"       // first day of the month
+"0 18 * * 1-5"    // weekdays at 6 PM
 ```
 
-## Registering Cron Jobs
-
-### In Module
+## Config
 
 ```go
-func (m *AppModule) Declarations() []any {
-    return []any{
-        // Register cron jobs
-        &CleanupJob{},
-        &DailyReportJob{},
-        &HealthCheckJob{},
-    }
+type Config struct {
+    TickInterval           time.Duration // how often the runner wakes up (default 60s)
+    Timezone               string        // IANA name (default "Etc/UTC")
+    DefaultRetryLimit      int           // 3
+    DefaultRetryDelay      int           // milliseconds
+    StaleJobTimeout        time.Duration // 5 minute default
+    EnableStaleJobRecovery bool          // recover jobs stuck in_progress
+    CleanupInterval        time.Duration // log retention sweep (0 = never)
+    LogRetentionPeriod     time.Duration // 7 days default
 }
 ```
 
-### Direct Registration
+Functional setters:
 
 ```go
-cronModule := cron.NewModule(
-    cron.WithJobs(
-        cron.Job{
-            Name:     "cleanup",
-            Schedule: "0 0 * * *",
-            Handler: func() error {
-                return cleanupOldData()
-            },
-        },
-        cron.Job{
-            Name:     "health-check",
-            Schedule: "*/5 * * * *",
-            Handler: func() error {
-                return checkHealth()
-            },
-        },
-    ),
+cfg := cron.DefaultConfig().Apply(
+    cron.WithTimezone("America/New_York"),
+    cron.WithTickInterval(30*time.Second),
+    cron.WithStaleJobRecovery(true),
 )
-```
-
-## Job Configuration
-
-### With Timezone
-
-```go
-type ReportJob struct{}
-
-func (j *ReportJob) Handle() error {
-    return generateDailyReport()
-}
-
-func (j *ReportJob) Schedule() string {
-    return "0 9 * * *" // 9 AM
-}
-
-func (j *ReportJob) Timezone() string {
-    return "America/New_York"
-}
-```
-
-### Single Instance (No Overlap)
-
-```go
-type LongRunningJob struct{}
-
-func (j *LongRunningJob) Handle() error {
-    // This job may take longer than schedule interval
-    return processLargeDataset()
-}
-
-func (j *LongRunningJob) Schedule() string {
-    return "*/5 * * * *"
-}
-
-// Don't start new instance if previous is still running
-func (j *LongRunningJob) WithoutOverlapping() bool {
-    return true
-}
-```
-
-### With Timeout
-
-```go
-func (j *Job) Timeout() time.Duration {
-    return 5 * time.Minute
-}
 ```
 
 ## Practical Examples
 
-### Database Cleanup
+### Database cleanup
 
 ```go
-type DatabaseCleanupJob struct {
-    db *gorm.DB `inject:""`
+type Cleanup struct {
+    db *sql.Db `inject:""`
 }
 
-func (j *DatabaseCleanupJob) Handle() error {
-    // Delete expired sessions
-    if err := j.db.Where("expires_at < ?", time.Now()).Delete(&Session{}).Error; err != nil {
-        return err
-    }
-
-    // Delete old logs
-    if err := j.db.Where("created_at < ?", time.Now().AddDate(0, -1, 0)).Delete(&Log{}).Error; err != nil {
-        return err
-    }
-
-    // Delete unverified users older than 24 hours
-    if err := j.db.Where("verified = ? AND created_at < ?", false, time.Now().Add(-24*time.Hour)).Delete(&User{}).Error; err != nil {
-        return err
-    }
-
-    return nil
+func (c *Cleanup) Handler(ctx context.Context, j *cron.CronJob) (any, error) {
+    cutoff := time.Now().AddDate(0, -1, 0)
+    return nil, c.db.Where("created_at < ?", cutoff).Delete(&Log{}).Error
 }
 
-func (j *DatabaseCleanupJob) Schedule() string {
-    return "0 2 * * *" // 2 AM daily
+func (m *AppModule) cronHandlers() []*cron.CronHandler {
+    cleanup := &Cleanup{}
+    return []*cron.CronHandler{
+        cron.NewHandler("system", "log-cleanup", "0 2 * * *", cleanup.Handler),
+    }
 }
 ```
 
-### Daily Report Generation
+### Cache warming
 
 ```go
-type DailyReportJob struct {
-    reportService *ReportService `inject:""`
-    emailService  *EmailService  `inject:""`
+type Warmer struct {
+    cache   *cache.Cache    `inject:""`
+    service *ProductService `inject:""`
 }
 
-func (j *DailyReportJob) Handle() error {
-    // Generate report for yesterday
-    yesterday := time.Now().AddDate(0, 0, -1)
-    report, err := j.reportService.GenerateDailyReport(yesterday)
-    if err != nil {
-        return err
+func (w *Warmer) Handler(ctx context.Context, j *cron.CronJob) (any, error) {
+    products, _ := w.service.GetPopularProducts(100)
+    for _, p := range products {
+        _ = w.cache.Set("product:"+p.ID, p, 2*time.Hour)
     }
-
-    // Send to admins
-    admins := j.reportService.GetAdminEmails()
-    for _, email := range admins {
-        j.emailService.SendReport(email, report)
-    }
-
-    return nil
-}
-
-func (j *DailyReportJob) Schedule() string {
-    return "0 6 * * *" // 6 AM daily
+    return len(products), nil
 }
 ```
 
-### Health Check
+### Health check
 
 ```go
-type HealthCheckJob struct {
-    services      []string
-    alertService  *AlertService `inject:""`
+type Health struct {
+    alerts *AlertService `inject:""`
+    urls   []string
 }
 
-func (j *HealthCheckJob) Handle() error {
-    for _, service := range j.services {
-        if err := j.checkService(service); err != nil {
-            j.alertService.SendAlert("Service unhealthy: " + service)
+func (h *Health) Handler(ctx context.Context, j *cron.CronJob) (any, error) {
+    for _, u := range h.urls {
+        resp, err := http.Get(u + "/health")
+        if err != nil || resp.StatusCode != 200 {
+            h.alerts.SendAlert("unhealthy: " + u)
+        }
+        if resp != nil {
+            resp.Body.Close()
         }
     }
-    return nil
-}
-
-func (j *HealthCheckJob) checkService(service string) error {
-    resp, err := http.Get(service + "/health")
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != 200 {
-        return fmt.Errorf("unhealthy: status %d", resp.StatusCode)
-    }
-    return nil
-}
-
-func (j *HealthCheckJob) Schedule() string {
-    return "*/5 * * * *" // Every 5 minutes
+    return nil, nil
 }
 ```
 
-### Cache Warming
+## Error Handling and Retries
+
+When the handler returns an error, the runner retries up to
+`RetryLimit + 1` attempts (the initial run plus `RetryLimit` retries).
+Between retries it sleeps `RetryDelay` ms — or, if
+`UseExponentialBackoff: true`, doubles the delay each attempt up to
+`DefaultMaxBackoffDelay` (60s).
 
 ```go
-type CacheWarmingJob struct {
-    cache          *cache.Client   `inject:""`
-    productService *ProductService `inject:""`
-}
-
-func (j *CacheWarmingJob) Handle() error {
-    // Warm popular products cache
-    products, _ := j.productService.GetPopularProducts(100)
-    for _, product := range products {
-        j.cache.Set("product:"+product.ID, product, 2*time.Hour)
-    }
-
-    // Warm categories cache
-    categories, _ := j.productService.GetCategories()
-    j.cache.Set("categories:all", categories, 2*time.Hour)
-
-    return nil
-}
-
-func (j *CacheWarmingJob) Schedule() string {
-    return "0 */2 * * *" // Every 2 hours
-}
+h := cron.NewHandler("imports", "nightly", "0 1 * * *", runImport).
+    WithRetryLimit(3).
+    WithRetryDelay(5_000).
+    WithExponentialBackoff()
 ```
 
-### External API Sync
+## Monitoring
+
+Each execution writes a `CronLog` row keyed by `job_id`. Query the runner's
+in-memory metrics via `(*cron.Cron).GetMetrics()`:
 
 ```go
-type SyncExternalDataJob struct {
-    apiClient    *ExternalAPI   `inject:""`
-    dataService  *DataService   `inject:""`
-}
-
-func (j *SyncExternalDataJob) Handle() error {
-    // Fetch external data
-    data, err := j.apiClient.FetchLatestData()
-    if err != nil {
-        return fmt.Errorf("failed to fetch external data: %w", err)
-    }
-
-    // Update local database
-    return j.dataService.UpdateFromExternal(data)
-}
-
-func (j *SyncExternalDataJob) Schedule() string {
-    return "0 */4 * * *" // Every 4 hours
-}
+m := cronService.GetMetrics()
+// m.TotalRuns, m.TotalSucceeded, m.TotalFailed, m.TotalRetried, m.LastRunAt
 ```
 
-## Error Handling
-
-### With Error Callback
+Or list jobs and recent logs:
 
 ```go
-type ImportJob struct{}
-
-func (j *ImportJob) Handle() error {
-    return runImport()
-}
-
-func (j *ImportJob) OnError(err error) {
-    log.Printf("Import job failed: %v", err)
-    sendAlertEmail("Import job failed", err.Error())
-}
-
-func (j *ImportJob) Schedule() string {
-    return "0 1 * * *"
-}
-```
-
-### With Retry
-
-```go
-type RetryableJob struct {
-    attempts int
-}
-
-func (j *RetryableJob) Handle() error {
-    j.attempts++
-    err := doWork()
-
-    if err != nil && j.attempts < 3 {
-        // Will be retried
-        return err
-    }
-
-    return nil
-}
-
-func (j *RetryableJob) MaxRetries() int {
-    return 3
-}
-```
-
-## Monitoring Cron Jobs
-
-### Job History
-
-```go
-type CronJobLog struct {
-    ID        string    `json:"id"`
-    JobName   string    `json:"job_name"`
-    StartedAt time.Time `json:"started_at"`
-    EndedAt   time.Time `json:"ended_at"`
-    Status    string    `json:"status"` // success, failed
-    Error     string    `json:"error,omitempty"`
-}
-
-func (j *Job) Handle() error {
-    log := &CronJobLog{
-        ID:        uuid.New().String(),
-        JobName:   "MyJob",
-        StartedAt: time.Now(),
-    }
-
-    err := j.doWork()
-
-    log.EndedAt = time.Now()
-    if err != nil {
-        log.Status = "failed"
-        log.Error = err.Error()
-    } else {
-        log.Status = "success"
-    }
-
-    j.saveLog(log)
-    return err
-}
-```
-
-### Status Endpoint
-
-```go
-func (c *AdminController) CronStatus(ctx types.Context) any {
-    jobs := c.cronService.GetJobs()
-
-    status := make([]map[string]interface{}, len(jobs))
-    for i, job := range jobs {
-        status[i] = map[string]interface{}{
-            "name":      job.Name,
-            "schedule":  job.Schedule,
-            "last_run":  job.LastRun,
-            "next_run":  job.NextRun,
-            "status":    job.Status,
-        }
-    }
-
-    return status
-}
+jobs, _ := cronService.ListJobs("")          // all groups
+logs, _ := cronService.GetJobLogs(jobID, 20) // last 20 entries
 ```
 
 ## Best Practices
 
-1. **Make jobs idempotent** - Safe to run multiple times
-2. **Use appropriate schedules** - Don't run too frequently
-3. **Handle errors gracefully** - Log and alert on failures
-4. **Set timeouts** - Prevent hung jobs
-5. **Avoid overlapping** for long-running jobs
-6. **Monitor execution** - Track success/failure rates
-7. **Use distributed locks** for multi-instance deployments
+1. **Make handlers idempotent** — they may run more than once on retry.
+2. **Pick the smallest schedule that meets the need** — every minute adds DB
+   churn.
+3. **Set a `TimeoutMs`** for long-running jobs.
+4. **Enable `EnableStaleJobRecovery`** in multi-instance deployments.
+5. **Use `Priority`** to keep critical jobs ahead of bulk work.
 
 ## Next Steps
 
-- [Queues](queues.md) - Background job processing
+- [Queues](queues.md) - Ad-hoc background job processing
 - [Events](events.md) - Event-driven architecture
 - [Logging](../building-blocks/logging.md) - Job logging

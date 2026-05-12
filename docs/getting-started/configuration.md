@@ -180,10 +180,11 @@ cacheModule := cache.NewModule(
 ```go
 import "github.com/awesome-goose/goose/modules/sql"
 
-sqlModule := sql.NewModule(
-    sql.WithDriver("sqlite"),
-    sql.WithDatabase("./data/app.db"),
-)
+sqlModule := sql.Root(&sql.Config{
+    Dialect: "sqlite",
+    Name:    "./data/app.db",
+    Sync:    true,
+})
 ```
 
 ### Queue Module
@@ -191,11 +192,16 @@ sqlModule := sql.NewModule(
 ```go
 import "github.com/awesome-goose/goose/modules/queues"
 
-queueModule := queues.NewModule(
-    queues.WithQueue("default"),
-    queues.WithWorkerCount(5),
-)
+cfg := queues.DefaultConfig()
+queues.WithQueue("default")(cfg)
+queues.WithPollInterval(500 * time.Millisecond)(cfg)
+
+queueModule := queues.Root(cfg, queueHandlers...)
 ```
+
+Per-handler worker count is configured via
+`handler.WithMinWorkers(n)` / `WithMaxWorkers(n)` — there is no
+`WithWorkerCount` on the module.
 
 ## Configuration Best Practices
 

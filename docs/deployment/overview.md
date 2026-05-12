@@ -64,22 +64,23 @@ JWT_SECRET=your-production-secret
 
 ### Load Environment
 
+`env.NewEnv()` auto-loads from the OS environment and a `.env` file in the
+working directory:
+
 ```go
 // main.go
 func main() {
-    // Load .env file if exists
-    if _, err := os.Stat(".env"); err == nil {
-        env.Load(".env")
-    }
+    e := env.NewEnv() // pulls from OS + .env
 
-    // Or use environment-specific files
-    appEnv := os.Getenv("APP_ENV")
-    if appEnv == "" {
-        appEnv = "production"
-    }
-    env.Load(".env." + appEnv)
+    appEnv := e.GetWithDefault("APP_ENV", "production")
+    log.Printf("Starting in %s mode", appEnv)
 }
 ```
+
+To load environment-specific files (e.g. `.env.production`), add a custom
+file source by composing `sources.NewFileEnvSource()` after configuring the
+working directory accordingly, or use a small init helper that reads the
+file and calls `e.Set(key, value)` for each line.
 
 ## Quick Docker Deployment
 
@@ -137,8 +138,8 @@ docker run -d \
 
 ```go
 type HealthController struct {
-    db    *gorm.DB  `inject:""`
-    redis *kv.Client `inject:""`
+    db *sql.Db `inject:""`
+    kv *kv.KV  `inject:""`
 }
 
 func (c *HealthController) Routes() types.Routes {
@@ -164,11 +165,11 @@ func (c *HealthController) Ready(ctx types.Context) any {
         checks["database"] = "healthy"
     }
 
-    // Redis
-    if err := c.checkRedis(); err != nil {
-        checks["redis"] = "unhealthy"
+    // KV store
+    if err := c.checkKV(); err != nil {
+        checks["kv"] = "unhealthy"
     } else {
-        checks["redis"] = "healthy"
+        checks["kv"] = "healthy"
     }
 
     // Determine overall status
@@ -224,19 +225,16 @@ type LogConfig struct {
     Output string // stdout, file
 }
 
-func setupLogging() {
-    config := LogConfig{
-        Level:  env.String("LOG_LEVEL", "info"),
-        Format: env.String("LOG_FORMAT", "json"),
-        Output: env.String("LOG_OUTPUT", "stdout"),
+func setupLogging(e *env.Env) LogConfig {
+    cfg := LogConfig{
+        Level:  e.GetWithDefault("LOG_LEVEL", "info"),
+        Format: e.GetWithDefault("LOG_FORMAT", "json"),
+        Output: e.GetWithDefault("LOG_OUTPUT", "stdout"),
     }
 
-    // Configure logger based on environment
-    if env.String("APP_ENV", "") == "production" {
-        // Use JSON format for production (easier to parse)
-        log.SetFormatter("json")
-        log.SetLevel("info")
-    }
+    // Wire formatters/processors via log.NewLogger(...) at boot — see the
+    // Logging guide for the canonical pattern.
+    return cfg
 }
 ```
 

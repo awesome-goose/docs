@@ -23,13 +23,11 @@ import (
 
 type AuthService struct {
     userService *UserService `inject:""`
-    jwtSecret   string
+    env         types.Env    `inject:""`
 }
 
-func NewAuthService() *AuthService {
-    return &AuthService{
-        jwtSecret: env.String("JWT_SECRET", ""),
-    }
+func (s *AuthService) secret() string {
+    return s.env.Get("JWT_SECRET")
 }
 ```
 
@@ -56,7 +54,7 @@ func (s *AuthService) GenerateToken(user *User) (string, error) {
     }
 
     token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-    return token.SignedString([]byte(s.jwtSecret))
+    return token.SignedString([]byte(s.secret()))
 }
 ```
 
@@ -68,7 +66,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*Claims, error) {
         if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
             return nil, fmt.Errorf("unexpected signing method")
         }
-        return []byte(s.jwtSecret), nil
+        return []byte(s.secret()), nil
     })
 
     if err != nil {
@@ -251,37 +249,33 @@ func (c *AuthController) Routes() types.Routes {
 ### Setup Session Store
 
 ```go
+import "github.com/awesome-goose/goose/modules/kv"
+
 type SessionService struct {
-    kv *kv.Client `inject:""`
+    kv *kv.KV `inject:""`
 }
 
 func (s *SessionService) Create(userID string) (string, error) {
     sessionID := uuid.New().String()
-
-    session := map[string]interface{}{
+    return sessionID, s.kv.Set("session:"+sessionID, map[string]any{
         "user_id":    userID,
         "created_at": time.Now(),
-    }
-
-    data, _ := json.Marshal(session)
-    err := s.kv.SetEx("session:"+sessionID, string(data), 24*time.Hour)
-
-    return sessionID, err
+    }, 24*time.Hour)
 }
 
 func (s *SessionService) Get(sessionID string) (*Session, error) {
-    data, err := s.kv.Get("session:" + sessionID)
+    v, err := s.kv.Get("session:" + sessionID)
     if err != nil {
         return nil, err
     }
-
-    var session Session
-    json.Unmarshal([]byte(data), &session)
-    return &session, nil
+    // kv stores JSON-decoded values; coerce as needed.
+    raw, _ := v.(map[string]any)
+    return &Session{UserID: raw["user_id"].(string)}, nil
 }
 
 func (s *SessionService) Destroy(sessionID string) error {
-    return s.kv.Del("session:" + sessionID)
+    _, err := s.kv.Del("session:" + sessionID)
+    return err
 }
 ```
 
@@ -367,27 +361,25 @@ func CheckPassword(password, hash string) bool {
 
 ```go
 type RefreshTokenService struct {
-    kv          *kv.Client    `inject:""`
+    kv          *kv.KV       `inject:""`
     authService *AuthService `inject:""`
+    userService *UserService `inject:""`
 }
 
 func (s *RefreshTokenService) Generate(userID string) (string, error) {
     refreshToken := uuid.New().String()
-
-    // Store with longer expiry
-    err := s.kv.SetEx("refresh:"+refreshToken, userID, 7*24*time.Hour)
-    return refreshToken, err
+    return refreshToken, s.kv.Set("refresh:"+refreshToken, userID, 7*24*time.Hour)
 }
 
 func (s *RefreshTokenService) Refresh(refreshToken string) (*TokenPair, error) {
-    // Get user ID from refresh token
-    userID, err := s.kv.Get("refresh:" + refreshToken)
+    v, err := s.kv.Get("refresh:" + refreshToken)
     if err != nil {
         return nil, fmt.Errorf("invalid refresh token")
     }
+    userID, _ := v.(string)
 
     // Invalidate old refresh token
-    s.kv.Del("refresh:" + refreshToken)
+    _, _ = s.kv.Del("refresh:" + refreshToken)
 
     // Generate new tokens
     user, _ := s.userService.GetByID(userID)

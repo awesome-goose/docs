@@ -7,69 +7,85 @@ The SQL module provides GORM integration for relational databases.
 ```go
 import (
     "github.com/awesome-goose/goose/modules/sql"
+    "github.com/awesome-goose/goose/types"
 )
 
-// Configure the module
-sqlModule := sql.NewModule(
-    sql.WithDialect("sqlite"),
-    sql.WithName("app.db"),
-)
-
-// Include in application
-stop, err := goose.Start(goose.API(platform, module, []types.Module{
-    sqlModule,
-}))
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        // Root sql module (creates and owns the *sql.Db)
+        sql.Root(&sql.Config{
+            Dialect: "sqlite",
+            Name:    "app.db",
+            Sync:    true,
+        }),
+    }
+}
 ```
+
+`sql.Root(cfg)` is equivalent to `sql.NewModule(cfg, true)`. Use
+`sql.Child(cfg)` (or `sql.NewModule(cfg, false)`) inside feature modules that
+should reuse the root connection.
 
 ## Configuration Options
 
 ### SQLite
 
 ```go
-sqlModule := sql.NewModule(
-    sql.WithDialect("sqlite"),
-    sql.WithName("app.db"),
-)
+sql.Root(&sql.Config{
+    Dialect: "sqlite",
+    Name:    "app.db",
+})
 ```
 
 ### PostgreSQL
 
 ```go
-sqlModule := sql.NewModule(
-    sql.WithDialect("postgres"),
-    sql.WithHost("localhost"),
-    sql.WithPort(5432),
-    sql.WithName("myapp"),
-    sql.WithUser("postgres"),
-    sql.WithPass("secret"),
-    sql.WithSSLMode("disable"),
-)
+sql.Root(&sql.Config{
+    Dialect: "postgres",
+    Host:    "localhost",
+    Port:    5432,
+    Name:    "myapp",
+    User:    "postgres",
+    Pass:    "secret",
+    SSLMode: "disable",
+})
 ```
 
 ### MySQL
 
 ```go
-sqlModule := sql.NewModule(
-    sql.WithDialect("mysql"),
-    sql.WithHost("localhost"),
-    sql.WithPort(3306),
-    sql.WithName("myapp"),
-    sql.WithUser("root"),
-    sql.WithPass("secret"),
-)
+sql.Root(&sql.Config{
+    Dialect: "mysql",
+    Host:    "localhost",
+    Port:    3306,
+    Name:    "myapp",
+    User:    "root",
+    Pass:    "secret",
+})
 ```
 
 ### Environment Configuration
 
+Inject `types.Env` into the module to pull values from the environment:
+
 ```go
-sqlModule := sql.NewModule(
-    sql.WithDialect(env.String("DB_DIALECT", "sqlite")),
-    sql.WithHost(env.String("DB_HOST", "localhost")),
-    sql.WithPort(env.Int("DB_PORT", 5432)),
-    sql.WithName(env.String("DB_NAME", "app.db")),
-    sql.WithUser(env.String("DB_USER", "")),
-    sql.WithPass(env.String("DB_PASS", "")),
-)
+type AppModule struct {
+    config types.Config `inject:""`
+    env    types.Env    `inject:""`
+}
+
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        sql.Root(&sql.Config{
+            Dialect: m.env.GetWithDefault("DB_DIALECT", "sqlite"),
+            Host:    m.env.GetWithDefault("DB_HOST", "localhost"),
+            Port:    m.env.GetInt("DB_PORT"),
+            Name:    m.env.GetWithDefault("DB_NAME", "app.db"),
+            User:    m.env.Get("DB_USER"),
+            Pass:    m.env.Get("DB_PASS"),
+        }),
+    }
+}
 ```
 
 ### All Available Options

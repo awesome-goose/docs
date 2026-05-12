@@ -95,10 +95,15 @@ func (s *MigrationService) runMigrations() {
 Run migrations only in development:
 
 ```go
-import "github.com/awesome-goose/goose/env"
+import "github.com/awesome-goose/goose/types"
+
+type MigrationService struct {
+    env types.Env `inject:""`
+    // ...
+}
 
 func (s *MigrationService) OnStart() {
-    if env.String("APP_ENV", "development") == "development" {
+    if s.env.GetWithDefault("APP_ENV", "development") == "development" {
         s.runMigrations()
     }
 }
