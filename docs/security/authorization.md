@@ -39,44 +39,41 @@ func RequireRole(roles ...string) *RoleMiddleware {
     return &RoleMiddleware{allowedRoles: roles}
 }
 
-func (m *RoleMiddleware) Handle(ctx types.Context, next types.Next) any {
+func (m *RoleMiddleware) Handle(ctx types.Context) error {
     // Get user role from context (set by auth middleware)
-    userRole := ctx.Get("user_role").(string)
+    userRole, _ := ctx.GetValue("user_role").(string)
 
     // Check if user has required role
     for _, role := range m.allowedRoles {
         if userRole == role {
-            return next()
+            return nil // allowed — continue
         }
     }
 
-    return ctx.Status(403).JSON(map[string]string{
-        "error": "Insufficient permissions",
-    })
+    return errors.New("insufficient permissions")
 }
 ```
 
 ### Apply to Routes
 
 ```go
-func (c *AdminController) Routes() types.Routes {
-    return types.Routes{
-        // User routes
-        {Method: "GET", Path: "/profile", Handler: c.Profile,
-            Middlewares: []any{&AuthMiddleware{}}},
+var ROUTES = router.ForRoutes(
+    // User routes
+    router.Get("/profile", []any{AdminController{}, "Profile"}, &AuthMiddleware{}),
 
-        // Editor routes
-        {Method: "POST", Path: "/posts", Handler: c.CreatePost,
-            Middlewares: []any{&AuthMiddleware{}, RequireRole("editor", "admin")}},
+    // Editor routes
+    router.Post("/posts", []any{AdminController{}, "CreatePost"},
+        &AuthMiddleware{}, RequireRole("editor", "admin")),
 
-        // Admin only routes
-        {Method: "GET", Path: "/admin/users", Handler: c.ListUsers,
-            Middlewares: []any{&AuthMiddleware{}, RequireRole("admin")}},
-        {Method: "DELETE", Path: "/admin/users/:id", Handler: c.DeleteUser,
-            Middlewares: []any{&AuthMiddleware{}, RequireRole("admin")}},
-    }
-}
+    // Admin only routes
+    router.Get("/admin/users", []any{AdminController{}, "ListUsers"},
+        &AuthMiddleware{}, RequireRole("admin")),
+    router.Delete("/admin/users/:id", []any{AdminController{}, "DeleteUser"},
+        &AuthMiddleware{}, RequireRole("admin")),
+)
 ```
+
+Middleware runs left to right — `AuthMiddleware` populates `user_role`, then `RequireRole` checks it.
 
 ## Permission-Based Control
 
@@ -141,32 +138,28 @@ func RequirePermission(permission string) *PermissionMiddleware {
     return &PermissionMiddleware{requiredPermission: permission}
 }
 
-func (m *PermissionMiddleware) Handle(ctx types.Context, next types.Next) any {
-    userRole := ctx.Get("user_role").(string)
+func (m *PermissionMiddleware) Handle(ctx types.Context) error {
+    userRole, _ := ctx.GetValue("user_role").(string)
 
     if !HasPermission(userRole, m.requiredPermission) {
-        return ctx.Status(403).JSON(map[string]string{
-            "error": "Permission denied",
-        })
+        return errors.New("permission denied")
     }
 
-    return next()
+    return nil
 }
 ```
 
 ### Apply Permissions
 
 ```go
-func (c *PostController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/posts", Handler: c.Index,
-            Middlewares: []any{&AuthMiddleware{}, RequirePermission(PermissionReadPosts)}},
-        {Method: "POST", Path: "/posts", Handler: c.Create,
-            Middlewares: []any{&AuthMiddleware{}, RequirePermission(PermissionWritePosts)}},
-        {Method: "DELETE", Path: "/posts/:id", Handler: c.Delete,
-            Middlewares: []any{&AuthMiddleware{}, RequirePermission(PermissionDeletePosts)}},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/posts", []any{PostController{}, "Index"},
+        &AuthMiddleware{}, RequirePermission(PermissionReadPosts)),
+    router.Post("/posts", []any{PostController{}, "Create"},
+        &AuthMiddleware{}, RequirePermission(PermissionWritePosts)),
+    router.Delete("/posts/:id", []any{PostController{}, "Delete"},
+        &AuthMiddleware{}, RequirePermission(PermissionDeletePosts)),
+)
 ```
 
 ## Resource-Based Authorization
@@ -178,30 +171,28 @@ type PostController struct {
     postService *PostService `inject:""`
 }
 
-func (c *PostController) Update(ctx types.Context) any {
-    postID := ctx.Param("id")
-    userID := ctx.Get("user_id").(string)
-    userRole := ctx.Get("user_role").(string)
+type UpdatePostDTO struct {
+    ID       string `param:"id"`
+    UserID   string `context:"user_id"`
+    UserRole string `context:"user_role"`
+    Title    string `json:"title"`
+    Content  string `json:"content"`
+}
 
+func (c *PostController) Update(dto *UpdatePostDTO) types.Output {
     // Get the post
-    post, err := c.postService.GetByID(postID)
+    post, err := c.postService.GetByID(dto.ID)
     if err != nil {
-        return ctx.Status(404).JSON(map[string]string{
-            "error": "Post not found",
-        })
+        return output.NotFound("Post not found")
     }
 
     // Check ownership or admin
-    if post.AuthorID != userID && userRole != "admin" {
-        return ctx.Status(403).JSON(map[string]string{
-            "error": "You can only edit your own posts",
-        })
+    if post.AuthorID != dto.UserID && dto.UserRole != "admin" {
+        return output.Forbidden("You can only edit your own posts")
     }
 
     // Proceed with update...
-    var dto UpdatePostDTO
-    ctx.Bind(&dto)
-    return c.postService.Update(postID, dto)
+    return output.JSON(c.postService.Update(dto.ID, dto))
 }
 ```
 
@@ -286,17 +277,20 @@ type PostController struct {
     policy      *PostPolicy
 }
 
-func (c *PostController) Update(ctx types.Context) any {
-    user := ctx.Get("user").(*User)
-    post, _ := c.postService.GetByID(ctx.Param("id"))
+type UpdatePostDto struct {
+    ID   string `param:"id"`
+    User *User  `context:"user"`
+}
 
-    if !c.policy.CanUpdate(user, post) {
-        return ctx.Status(403).JSON(map[string]string{
-            "error": "Cannot update this post",
-        })
+func (c *PostController) Update(dto *UpdatePostDto) types.Output {
+    post, _ := c.postService.GetByID(dto.ID)
+
+    if !c.policy.CanUpdate(dto.User, post) {
+        return output.Forbidden("Cannot update this post")
     }
 
     // Proceed...
+    return output.JSON(post)
 }
 ```
 
@@ -336,22 +330,26 @@ type AdminGuard struct {
     authService *AuthService `inject:""`
 }
 
-func (g *AdminGuard) Handle(ctx types.Context, next types.Next) any {
+func (g *AdminGuard) Handle(ctx types.Context) error {
     // Check authentication
-    claims, err := g.authService.ValidateToken(ctx.Header("Authorization"))
+    authHeader := ""
+    if h := ctx.Request().Headers()["Authorization"]; len(h) > 0 {
+        authHeader = h[0]
+    }
+    claims, err := g.authService.ValidateToken(authHeader)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{"error": "Unauthorized"})
+        return errors.New("unauthorized")
     }
 
     // Check admin role
     if claims.Role != "admin" {
-        return ctx.Status(403).JSON(map[string]string{"error": "Admin access required"})
+        return errors.New("admin access required")
     }
 
-    ctx.Set("user_id", claims.UserID)
-    ctx.Set("user_role", claims.Role)
+    ctx.SetValue("user_id", claims.UserID)
+    ctx.SetValue("user_role", claims.Role)
 
-    return next()
+    return nil
 }
 ```
 

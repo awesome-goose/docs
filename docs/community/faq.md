@@ -88,23 +88,26 @@ No, circular dependencies are not supported. Refactor using a shared module or i
 
 ### How do I define routes?
 
-Implement the `Routes()` method:
+Build a route module with `router.ForRoutes` and import it from your module:
 
 ```go
-func (c *Controller) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/users", Handler: c.List},
-        {Method: "POST", Path: "/users", Handler: c.Create},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/users", []any{Controller{}, "List"}),
+    router.Post("/users", []any{Controller{}, "Create"}),
+)
 ```
 
 ### How do I access route parameters?
 
+Declare them on a DTO with the `param` tag — the kernel binds them for you:
+
 ```go
-func (c *Controller) Show(ctx types.Context) any {
-    id := ctx.Param("id")
-    // ...
+type ShowDto struct {
+    ID string `param:"id"`
+}
+
+func (c *Controller) Show(dto *ShowDto) types.Output {
+    return output.JSON(c.service.GetByID(dto.ID))
 }
 ```
 
@@ -113,7 +116,7 @@ func (c *Controller) Show(ctx types.Context) any {
 Not directly. Use path parameters and validate in your handler:
 
 ```go
-{Path: "/users/:id", Handler: c.Show}
+router.Get("/users/:id", []any{Controller{}, "Show"})
 ```
 
 ## Database
@@ -124,11 +127,11 @@ Through GORM: PostgreSQL, MySQL, SQLite, SQL Server.
 
 ### How do I run migrations?
 
-Use AutoMigrate in a startup hook:
+Use AutoMigrate in the `Boot` startup hook (implements `types.Bootable`):
 
 ```go
-func (s *AppService) OnStart() {
-    s.db.AutoMigrate(&User{}, &Post{})
+func (s *AppService) Boot(k types.Kernel) error {
+    return s.db.AutoMigrate(&User{}, &Post{})
 }
 ```
 

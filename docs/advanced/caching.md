@@ -256,7 +256,7 @@ func (s *ProductService) GetPaginated(page, limit int) ([]Product, error) {
 
 ## Cache Warming
 
-Pre-populate the cache on startup using `OnStart`:
+Pre-populate the cache on startup using the `Boot` hook:
 
 ```go
 type CacheWarmer struct {
@@ -264,11 +264,12 @@ type CacheWarmer struct {
     svc   *ProductService `inject:""`
 }
 
-func (w *CacheWarmer) OnStart() {
+func (w *CacheWarmer) Boot(k types.Kernel) error {
     products, _ := w.svc.GetPopularProducts()
     for _, p := range products {
         _ = w.cache.Set("product:"+p.ID, p, time.Hour)
     }
+    return nil
 }
 ```
 

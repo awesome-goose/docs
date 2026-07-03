@@ -143,14 +143,19 @@ func (m *UsersModule) Declarations() []any {
 ```go
 package users
 
-import "github.com/awesome-goose/goose/types"
+import (
+    "github.com/awesome-goose/goose/io/output"
+    "github.com/awesome-goose/goose/types"
+)
 
 type UsersController struct {
     service *UsersService `inject:""`
 }
 
-func (c *UsersController) Index(ctx types.Context) any {
-    return c.service.GetAll()
+type EmptyDto struct{}
+
+func (c *UsersController) Index(dto *EmptyDto) types.Output {
+    return output.JSON(c.service.GetAll())
 }
 ```
 
@@ -159,13 +164,11 @@ func (c *UsersController) Index(ctx types.Context) any {
 ```go
 package users
 
-import "github.com/awesome-goose/goose/types"
+import "github.com/awesome-goose/goose/modules/router"
 
-func (c *UsersController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/users", Handler: c.Index},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/users", []any{UsersController{}, "Index"}),
+)
 ```
 
 ### Resource Module Files
@@ -192,34 +195,43 @@ type Product struct {
 ```go
 package products
 
-import "github.com/awesome-goose/goose/types"
+import (
+    "github.com/awesome-goose/goose/io/output"
+    "github.com/awesome-goose/goose/types"
+)
 
 type ProductsController struct {
     service *ProductsService `inject:""`
 }
 
-func (c *ProductsController) Index(ctx types.Context) any {
-    return c.service.GetAll()
+type ProductIDDto struct {
+    ID string `param:"id"`
 }
 
-func (c *ProductsController) Show(ctx types.Context) any {
-    return c.service.GetByID(ctx.Param("id"))
+type UpdateProductDTO struct {
+    ID    string  `param:"id"`
+    Name  string  `json:"name"`
+    Price float64 `json:"price"`
 }
 
-func (c *ProductsController) Create(ctx types.Context) any {
-    var dto CreateProductDTO
-    ctx.Bind(&dto)
-    return c.service.Create(dto)
+func (c *ProductsController) Index(dto *EmptyDto) types.Output {
+    return output.JSON(c.service.GetAll())
 }
 
-func (c *ProductsController) Update(ctx types.Context) any {
-    var dto UpdateProductDTO
-    ctx.Bind(&dto)
-    return c.service.Update(ctx.Param("id"), dto)
+func (c *ProductsController) Show(dto *ProductIDDto) types.Output {
+    return output.JSON(c.service.GetByID(dto.ID))
 }
 
-func (c *ProductsController) Delete(ctx types.Context) any {
-    return c.service.Delete(ctx.Param("id"))
+func (c *ProductsController) Create(dto *CreateProductDTO) types.Output {
+    return output.Created(c.service.Create(dto))
+}
+
+func (c *ProductsController) Update(dto *UpdateProductDTO) types.Output {
+    return output.JSON(c.service.Update(dto.ID, dto))
+}
+
+func (c *ProductsController) Delete(dto *ProductIDDto) types.Output {
+    return output.NoContent()
 }
 ```
 
@@ -228,17 +240,15 @@ func (c *ProductsController) Delete(ctx types.Context) any {
 ```go
 package products
 
-import "github.com/awesome-goose/goose/types"
+import "github.com/awesome-goose/goose/modules/router"
 
-func (c *ProductsController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/products", Handler: c.Index},
-        {Method: "GET", Path: "/products/:id", Handler: c.Show},
-        {Method: "POST", Path: "/products", Handler: c.Create},
-        {Method: "PUT", Path: "/products/:id", Handler: c.Update},
-        {Method: "DELETE", Path: "/products/:id", Handler: c.Delete},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/products", []any{ProductsController{}, "Index"}),
+    router.Get("/products/:id", []any{ProductsController{}, "Show"}),
+    router.Post("/products", []any{ProductsController{}, "Create"}),
+    router.Put("/products/:id", []any{ProductsController{}, "Update"}),
+    router.Delete("/products/:id", []any{ProductsController{}, "Delete"}),
+)
 ```
 
 ## Registering Modules

@@ -273,27 +273,33 @@ func (m *ApiModule) Declarations() []any {
 
 ### API Responses (JSON)
 
+Each platform binds a DTO and returns a `types.Output`; only the `output.*` helper differs.
+
 ```go
-func (c *ApiController) GetUser(ctx types.Context) any {
-    user, err := c.service.GetUser(ctx.Param("id"))
+type GetUserDto struct {
+    ID string `param:"id"`
+}
+
+func (c *ApiController) GetUser(dto *GetUserDto) types.Output {
+    user, err := c.service.GetUser(dto.ID)
     if err != nil {
-        return map[string]string{"error": err.Error()}
+        return output.NotFound(err.Error())
     }
-    return user  // Serialized to JSON
+    return output.JSON(user)
 }
 ```
 
 ### Web Responses (HTML)
 
 ```go
-func (c *WebController) GetUser(ctx types.Context) any {
-    user, err := c.service.GetUser(ctx.Param("id"))
+func (c *WebController) GetUser(dto *GetUserDto) types.Output {
+    user, err := c.service.GetUser(dto.ID)
     if err != nil {
-        return ctx.Render("error.html", map[string]any{
+        return output.View("pages/error.html", map[string]any{
             "message": err.Error(),
-        })
+        }, output.WithHTMLCode(404))
     }
-    return ctx.Render("user/show.html", map[string]any{
+    return output.View("pages/users/show.html", map[string]any{
         "user": user,
     })
 }
@@ -301,13 +307,15 @@ func (c *WebController) GetUser(ctx types.Context) any {
 
 ### CLI Responses (Console)
 
+The CLI reads the id as a route parameter (`/user/:id`):
+
 ```go
-func (c *CliController) GetUser(ctx types.Context) any {
-    user, err := c.service.GetUser(ctx.Arg("id"))
+func (c *CliController) GetUser(dto *GetUserDto) types.Output {
+    user, err := c.service.GetUser(dto.ID)
     if err != nil {
-        return fmt.Sprintf("Error: %s", err.Error())
+        return output.ConsoleError(fmt.Sprintf("Error: %s", err.Error()))
     }
-    return fmt.Sprintf("User: %s (%s)", user.Name, user.Email)
+    return output.ConsoleSuccess(fmt.Sprintf("User: %s (%s)", user.Name, user.Email))
 }
 ```
 
@@ -340,22 +348,18 @@ goose.CLI(cliPlatform, cliModule, nil)
 Platform-specific controllers should only handle request/response:
 
 ```go
-// API Controller
-func (c *ApiUserController) Create(ctx types.Context) any {
-    var dto CreateUserDTO
-    ctx.Bind(&dto)
-    return c.service.CreateUser(dto)  // Delegate to shared service
+// API Controller — dto is bound automatically
+func (c *ApiUserController) Create(dto *CreateUserDTO) types.Output {
+    return output.Created(c.service.CreateUser(dto)) // Delegate to shared service
 }
 
-// Web Controller
-func (c *WebUserController) Create(ctx types.Context) any {
-    var dto CreateUserDTO
-    ctx.Bind(&dto)
-    user, err := c.service.CreateUser(dto)  // Same service
+// Web Controller — same service, different response
+func (c *WebUserController) Create(dto *CreateUserDTO) types.Output {
+    user, err := c.service.CreateUser(dto) // Same service
     if err != nil {
-        return ctx.Redirect("/users/new?error=" + err.Error())
+        return output.Redirect("/users/new").WithError(err.Error())
     }
-    return ctx.Redirect("/users/" + user.ID)
+    return output.Redirect("/users/" + user.ID)
 }
 ```
 
@@ -378,14 +382,14 @@ func (s *UserService) CreateUser(dto CreateUserDTO) (*User, error) {
 Each platform has its own response handling:
 
 ```go
-// API: Return data (auto-serialized to JSON)
-return user
+// API: JSON
+return output.JSON(user)
 
-// Web: Render templates
-return ctx.Render("template.html", data)
+// Web: render a template
+return output.View("pages/users/show.html", data)
 
-// CLI: Return strings or formatted output
-return fmt.Sprintf("Created user: %s", user.Name)
+// CLI: formatted console output
+return output.ConsoleSuccess(fmt.Sprintf("Created user: %s", user.Name))
 ```
 
 ## Next Steps

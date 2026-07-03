@@ -4,7 +4,7 @@ Build command-line applications with the Goose CLI platform.
 
 ## Overview
 
-The CLI platform handles command-line argument parsing and executing commands.
+The CLI platform parses the process arguments, routes them to a command handler, and prints the handler's output. Positional arguments form the command **path**; `--flags` are bound to your DTO.
 
 ## Quick Start
 
@@ -45,59 +45,63 @@ platform := cli.NewPlatform(
 
 ## Defining Commands
 
+Commands are routes registered with `router.Cli`. The handler is a `[]any{Controller{}, "Method"}` tuple, takes a DTO, and returns a `types.Output` — build these with the `output` console helpers.
+
 ### Basic Command
 
 ```go
+import (
+    "github.com/awesome-goose/goose/io/output"
+    "github.com/awesome-goose/goose/modules/router"
+    "github.com/awesome-goose/goose/types"
+)
+
 type GreetController struct{}
 
-func (c *GreetController) Routes() types.Routes {
-    return types.Routes{
-        {Path: "greet", Handler: c.Greet},
-    }
+type GreetDto struct {
+    Name string `flag:"name"`
 }
 
-func (c *GreetController) Greet(ctx types.Context) any {
-    name := ctx.Arg(0)
+func (c *GreetController) Greet(dto *GreetDto) types.Output {
+    name := dto.Name
     if name == "" {
         name = "World"
     }
-    return fmt.Sprintf("Hello, %s!", name)
+    return output.ConsoleSuccess(fmt.Sprintf("Hello, %s!", name))
 }
+```
+
+Register it:
+
+```go
+var ROUTES = router.ForRoutes(
+    router.Cli("/greet", []any{GreetController{}, "Greet"}),
+)
 ```
 
 **Usage:**
 
 ```bash
-myapp greet John
+myapp greet --name=John
 # Output: Hello, John!
 ```
 
-### Command with Flags
+### Flags
+
+Every `--flag` (and `-f` shorthand) binds to a DTO field via the `flag` tag. A bare `--force` with no value binds as `"true"`, so `bool` fields work:
 
 ```go
-func (c *Controller) Routes() types.Routes {
-    return types.Routes{
-        {
-            Path:    "create",
-            Handler: c.Create,
-            Meta: map[string]interface{}{
-                "flags": []cli.Flag{
-                    {Name: "name", Short: "n", Required: true},
-                    {Name: "force", Short: "f", Type: "bool"},
-                },
-            },
-        },
-    }
+type CreateDto struct {
+    Name  string `flag:"name"`
+    Force bool   `flag:"force"`
+    Count int    `flag:"count"`
 }
 
-func (c *Controller) Create(ctx types.Context) any {
-    name := ctx.Flag("name")
-    force := ctx.FlagBool("force")
-
-    if force {
-        return fmt.Sprintf("Force creating: %s", name)
+func (c *Controller) Create(dto *CreateDto) types.Output {
+    if dto.Force {
+        return output.ConsoleSuccess(fmt.Sprintf("Force creating: %s", dto.Name))
     }
-    return fmt.Sprintf("Creating: %s", name)
+    return output.ConsoleSuccess(fmt.Sprintf("Creating: %s", dto.Name))
 }
 ```
 
@@ -106,47 +110,73 @@ func (c *Controller) Create(ctx types.Context) any {
 ```bash
 myapp create --name=myproject
 myapp create -n myproject -f
+myapp create --name=myproject --count=3 --force
 ```
 
+### Positional Arguments
+
+Positional arguments make up the command path. To accept one as input, declare it as a route parameter and bind it with the `param` tag:
+
+```go
+// Route: /user/show/:id
+type ShowDto struct {
+    ID string `param:"id"`
+}
+
+func (c *UserController) Show(dto *ShowDto) types.Output {
+    user, err := c.service.GetByID(dto.ID)
+    if err != nil {
+        return output.ConsoleError(fmt.Sprintf("User %s not found", dto.ID))
+    }
+    return output.ConsoleSuccess(fmt.Sprintf("User: %s", user.Email))
+}
+```
+
+```go
+var ROUTES = router.ForRoutes(
+    router.Cli("/user/show/:id", []any{UserController{}, "Show"}),
+)
+```
+
+**Usage:** `myapp user show 123`
+
 ### Subcommands
+
+Nest commands with `router.Group` or slash-separated paths:
 
 ```go
 type UserController struct {
     service *UserService `inject:""`
 }
 
-func (c *UserController) Routes() types.Routes {
-    return types.Routes{
-        {Path: "user/list", Handler: c.List},
-        {Path: "user/create", Handler: c.Create},
-        {Path: "user/delete", Handler: c.Delete},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Group("/user",
+        router.Cli("/list", []any{UserController{}, "List"}),
+        router.Cli("/create", []any{UserController{}, "Create"}),
+        router.Cli("/delete/:id", []any{UserController{}, "Delete"}),
+    ),
+)
 
-func (c *UserController) List(ctx types.Context) any {
+func (c *UserController) List(dto *EmptyDto) types.Output {
     users := c.service.GetAll()
-
-    for _, user := range users {
-        fmt.Printf("%s - %s\n", user.ID, user.Email)
+    rows := make([][]string, 0, len(users))
+    for _, u := range users {
+        rows = append(rows, []string{u.ID, u.Email})
     }
-
-    return nil
+    return output.Table([]string{"ID", "Email"}, rows)
 }
 
-func (c *UserController) Create(ctx types.Context) any {
-    email := ctx.Flag("email")
-    name := ctx.Flag("name")
+type CreateUserDto struct {
+    Email string `flag:"email"`
+    Name  string `flag:"name"`
+}
 
-    user, err := c.service.Create(CreateUserDTO{
-        Email: email,
-        Name:  name,
-    })
-
+func (c *UserController) Create(dto *CreateUserDto) types.Output {
+    user, err := c.service.Create(dto)
     if err != nil {
-        return fmt.Sprintf("Error: %v", err)
+        return output.ConsoleError(fmt.Sprintf("Error: %v", err))
     }
-
-    return fmt.Sprintf("Created user: %s", user.ID)
+    return output.ConsoleSuccess(fmt.Sprintf("Created user: %s", user.ID))
 }
 ```
 
@@ -158,90 +188,52 @@ myapp user create --email=user@example.com --name=John
 myapp user delete 123
 ```
 
-## Context Methods
-
-### Arguments
-
-```go
-func (c *Controller) Run(ctx types.Context) any {
-    // Get argument by position
-    first := ctx.Arg(0)
-    second := ctx.Arg(1)
-
-    // Get all arguments
-    args := ctx.Args()
-
-    return nil
-}
-```
-
-### Flags
-
-```go
-func (c *Controller) Run(ctx types.Context) any {
-    // String flag
-    name := ctx.Flag("name")
-
-    // Bool flag
-    verbose := ctx.FlagBool("verbose")
-
-    // Int flag
-    count := ctx.FlagInt("count")
-
-    // With defaults
-    port := ctx.FlagInt("port")
-    if port == 0 {
-        port = 8080
-    }
-
-    return nil
-}
-```
-
 ## Output
 
-### Console Output
+Return an `output` console value from the handler rather than printing directly:
 
 ```go
-func (c *Controller) Run(ctx types.Context) any {
-    // Return string to print
-    return "Hello, World!"
-}
-
-func (c *Controller) RunComplex(ctx types.Context) any {
-    // Print directly
-    fmt.Println("Processing...")
-
-    // Return formatted output
-    return fmt.Sprintf("Completed %d items", count)
+func (c *Controller) Run(dto *EmptyDto) types.Output {
+    return output.Line("Hello, World!")
 }
 ```
+
+The console helpers include:
+
+| Helper                          | Purpose                          |
+| ------------------------------- | -------------------------------- |
+| `output.Line(msg)`              | A plain line                     |
+| `output.ConsoleSuccess(msg)`    | Green success message            |
+| `output.ConsoleError(msg)`      | Red error message (exit code 1)  |
+| `output.Info` / `output.Warning`| Cyan / yellow status messages    |
+| `output.Table(headers, rows)`   | A formatted table                |
+| `output.List(items)`            | A bulleted list                  |
+| `output.Box(title, lines)`      | A boxed panel                    |
+| `output.ProgressBar(cur, total, width)` | A progress bar           |
 
 ### Formatted Tables
 
 ```go
-func (c *UserController) List(ctx types.Context) any {
+func (c *UserController) List(dto *EmptyDto) types.Output {
     users := c.service.GetAll()
 
-    // Print header
-    fmt.Printf("%-36s %-30s %-20s\n", "ID", "EMAIL", "NAME")
-    fmt.Println(strings.Repeat("-", 86))
-
-    // Print rows
-    for _, user := range users {
-        fmt.Printf("%-36s %-30s %-20s\n", user.ID, user.Email, user.Name)
+    rows := make([][]string, 0, len(users))
+    for _, u := range users {
+        rows = append(rows, []string{u.ID, u.Email, u.Name})
     }
 
-    return nil
+    return output.Table([]string{"ID", "Email", "Name"}, rows)
 }
 ```
 
 ## Interactive Input
 
+Read from stdin inside the handler, then return an output value:
+
 ```go
 import "bufio"
 
-func (c *Controller) CreateInteractive(ctx types.Context) any {
+func (c *Controller) CreateInteractive(dto *EmptyDto) types.Output {
     reader := bufio.NewReader(os.Stdin)
 
     fmt.Print("Enter email: ")
@@ -253,60 +245,51 @@ func (c *Controller) CreateInteractive(ctx types.Context) any {
     name = strings.TrimSpace(name)
 
     // Create user...
-    return fmt.Sprintf("Created user with email: %s", email)
+    return output.ConsoleSuccess(fmt.Sprintf("Created user with email: %s", email))
 }
 ```
 
 ## Progress Indicators
 
+For live progress, print in the loop and return the final result:
+
 ```go
-func (c *Controller) Process(ctx types.Context) any {
+func (c *Controller) Process(dto *EmptyDto) types.Output {
     items := []string{"item1", "item2", "item3"}
     total := len(items)
 
-    for i, item := range items {
+    for i := range items {
         // Process item...
         time.Sleep(time.Second)
-
-        // Show progress
         percent := float64(i+1) / float64(total) * 100
         fmt.Printf("\rProgress: %.0f%% (%d/%d)", percent, i+1, total)
     }
+    fmt.Println()
 
-    fmt.Println("\nComplete!")
-    return nil
+    return output.ConsoleSuccess("Complete!")
 }
 ```
 
-## Error Handling
+## Error Handling & Exit Codes
+
+`output.ConsoleError` prints in red and sets a non-zero exit code. For a custom code, use `output.ConsoleWithCode`:
 
 ```go
-func (c *Controller) Run(ctx types.Context) any {
-    id := ctx.Arg(0)
-    if id == "" {
-        return errors.New("user ID is required")
-    }
-
-    user, err := c.service.GetByID(id)
-    if err != nil {
-        return fmt.Errorf("failed to get user: %w", err)
-    }
-
-    return fmt.Sprintf("User: %s", user.Email)
+type RunDto struct {
+    ID string `param:"id"`
 }
-```
 
-## Exit Codes
-
-```go
-func (c *Controller) Run(ctx types.Context) any {
-    err := c.doSomething()
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
+func (c *Controller) Run(dto *RunDto) types.Output {
+    if dto.ID == "" {
+        return output.ConsoleError("user ID is required") // exit code 1
     }
 
-    return "Success"
+    user, err := c.service.GetByID(dto.ID)
+    if err != nil {
+        return output.ConsoleWithCode(fmt.Sprintf("failed to get user: %v", err), 2)
+    }
+
+    return output.ConsoleSuccess(fmt.Sprintf("User: %s", user.Email))
 }
 ```
 
@@ -315,15 +298,15 @@ func (c *Controller) Run(ctx types.Context) any {
 ### CRUD Commands
 
 ```go
-func (c *UserController) Routes() types.Routes {
-    return types.Routes{
-        {Path: "users", Handler: c.List},
-        {Path: "users/show", Handler: c.Show},
-        {Path: "users/create", Handler: c.Create},
-        {Path: "users/update", Handler: c.Update},
-        {Path: "users/delete", Handler: c.Delete},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Group("/users",
+        router.Cli("/", []any{UserController{}, "List"}),
+        router.Cli("/show/:id", []any{UserController{}, "Show"}),
+        router.Cli("/create", []any{UserController{}, "Create"}),
+        router.Cli("/update/:id", []any{UserController{}, "Update"}),
+        router.Cli("/delete/:id", []any{UserController{}, "Delete"}),
+    ),
+)
 ```
 
 ### Database Commands
@@ -333,38 +316,27 @@ type DatabaseController struct {
     db *gorm.DB `inject:""`
 }
 
-func (c *DatabaseController) Routes() types.Routes {
-    return types.Routes{
-        {Path: "db/migrate", Handler: c.Migrate},
-        {Path: "db/seed", Handler: c.Seed},
-        {Path: "db/reset", Handler: c.Reset},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Group("/db",
+        router.Cli("/migrate", []any{DatabaseController{}, "Migrate"}),
+        router.Cli("/seed", []any{DatabaseController{}, "Seed"}),
+        router.Cli("/reset", []any{DatabaseController{}, "Reset"}),
+    ),
+)
 
-func (c *DatabaseController) Migrate(ctx types.Context) any {
+func (c *DatabaseController) Migrate(dto *EmptyDto) types.Output {
     c.db.AutoMigrate(&User{}, &Post{})
-    return "Migrations complete"
+    return output.ConsoleSuccess("Migrations complete")
 }
-```
-
-### Help Text
-
-Commands automatically get help:
-
-```bash
-myapp --help
-myapp user --help
-myapp user create --help
 ```
 
 ## Best Practices
 
-1. **Provide clear help text** for all commands
+1. **Bind flags with `flag` tags** rather than parsing arguments by hand
 2. **Use consistent flag naming** across commands
-3. **Handle errors gracefully** with clear messages
+3. **Return `output.ConsoleError`** for failures so the exit code is non-zero
 4. **Show progress** for long operations
-5. **Use exit codes** appropriately
-6. **Support both flags and arguments** where sensible
+5. **Group related subcommands** under a shared path
 
 ## Next Steps
 

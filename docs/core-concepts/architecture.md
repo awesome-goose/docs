@@ -217,10 +217,8 @@ type OrderController struct {
     service *OrderService `inject:""`
 }
 
-func (c *OrderController) Create(ctx types.Context) any {
-    var dto CreateOrderDTO
-    ctx.Bind(&dto)
-    return c.service.CreateOrder(dto)
+func (c *OrderController) Create(dto *CreateOrderDTO) types.Output {
+    return output.Created(c.service.CreateOrder(dto))
 }
 ```
 

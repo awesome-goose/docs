@@ -138,15 +138,12 @@ type OrderController struct {
     queue *queues.Queue `inject:""`
 }
 
-func (c *OrderController) Create(ctx types.Context) any {
-    var dto CreateOrderDTO
-    _ = ctx.Bind(&dto)
-
+func (c *OrderController) Create(dto *CreateOrderDTO) types.Output {
     // Push immediately to the default queue
     job, _ := c.queue.Push("emails", "send-welcome",
         SendEmail{To: dto.Email, Subject: "Welcome"}, nil)
 
-    return map[string]string{"job_id": job.Id}
+    return output.JSON(map[string]string{"job_id": job.Id})
 }
 ```
 

@@ -11,15 +11,13 @@ type AppService struct {
     db *gorm.DB `inject:""`
 }
 
-func (s *AppService) OnStart() {
-    err := s.db.AutoMigrate(
+// Boot runs once at startup (implements types.Bootable).
+func (s *AppService) Boot(k types.Kernel) error {
+    return s.db.AutoMigrate(
         &entities.User{},
         &entities.Post{},
         &entities.Comment{},
     )
-    if err != nil {
-        panic(err)
-    }
 }
 ```
 
@@ -68,8 +66,9 @@ type MigrationService struct {
     db *gorm.DB `inject:""`
 }
 
-func (s *MigrationService) OnStart() {
+func (s *MigrationService) Boot(k types.Kernel) error {
     s.runMigrations()
+    return nil
 }
 
 func (s *MigrationService) runMigrations() {
@@ -102,10 +101,11 @@ type MigrationService struct {
     // ...
 }
 
-func (s *MigrationService) OnStart() {
+func (s *MigrationService) Boot(k types.Kernel) error {
     if s.env.GetWithDefault("APP_ENV", "development") == "development" {
         s.runMigrations()
     }
+    return nil
 }
 ```
 
@@ -118,8 +118,9 @@ type MigrationService struct {
     db *gorm.DB `inject:""`
 }
 
-func (s *MigrationService) OnStart() {
+func (s *MigrationService) Boot(k types.Kernel) error {
     s.runMigrations()
+    return nil
 }
 
 func (s *MigrationService) runMigrations() {
@@ -181,12 +182,13 @@ type MigrationService struct {
     db *gorm.DB `inject:""`
 }
 
-func (s *MigrationService) OnStart() {
+func (s *MigrationService) Boot(k types.Kernel) error {
     // Create migrations table
     s.db.AutoMigrate(&Migration{})
 
     // Run pending migrations
     s.runPending()
+    return nil
 }
 
 func (s *MigrationService) runPending() {
@@ -362,28 +364,33 @@ type MigrationsController struct {
     db *gorm.DB `inject:""`
 }
 
-func (c *MigrationsController) Routes() types.Routes {
-    return types.Routes{
-        {Path: "migrate", Handler: c.Migrate},
-        {Path: "migrate/status", Handler: c.Status},
-        {Path: "migrate/rollback", Handler: c.Rollback},
-    }
-}
+type EmptyDto struct{}
 
-func (c *MigrationsController) Migrate(ctx types.Context) any {
+func (c *MigrationsController) Migrate(dto *EmptyDto) types.Output {
     // Run migrations
-    return "Migrations complete"
+    return output.ConsoleSuccess("Migrations complete")
 }
 
-func (c *MigrationsController) Status(ctx types.Context) any {
+func (c *MigrationsController) Status(dto *EmptyDto) types.Output {
     // Show migration status
-    return "Pending: 2, Applied: 5"
+    return output.Line("Pending: 2, Applied: 5")
 }
 
-func (c *MigrationsController) Rollback(ctx types.Context) any {
+func (c *MigrationsController) Rollback(dto *EmptyDto) types.Output {
     // Rollback last migration
-    return "Rolled back: 007_add_indexes"
+    return output.ConsoleSuccess("Rolled back: 007_add_indexes")
 }
+```
+
+Register the commands with the CLI router:
+
+```go
+// app/cli/migrations.routes.go
+var ROUTES = router.ForRoutes(
+    router.Cli("/migrate", []any{MigrationsController{}, "Migrate"}),
+    router.Cli("/migrate/status", []any{MigrationsController{}, "Status"}),
+    router.Cli("/migrate/rollback", []any{MigrationsController{}, "Rollback"}),
+)
 ```
 
 ## Best Practices

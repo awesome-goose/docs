@@ -1,271 +1,256 @@
 # Routing
 
-Routing in Goose maps incoming requests to handler functions. Routes are defined declaratively in controllers.
+Routing maps incoming requests to controller handlers. Routes are declared with the `router` module and registered by importing the resulting module into your module tree.
+
+```go
+import "github.com/awesome-goose/goose/modules/router"
+```
 
 ## Defining Routes
 
-Routes are defined in a `Routes()` method on your controller:
+Build a route module with `router.ForRoutes` and the HTTP verb helpers. Each handler is a `[]any{Controller{}, "MethodName"}` tuple:
 
 ```go
-type UserController struct {
-    service *UserService `inject:""`
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/users", []any{UserController{}, "List"}),
+    router.Get("/users/:id", []any{UserController{}, "Show"}),
+    router.Post("/users", []any{UserController{}, "Create"}),
+    router.Put("/users/:id", []any{UserController{}, "Update"}),
+    router.Delete("/users/:id", []any{UserController{}, "Delete"}),
+)
+```
 
-func (c *UserController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/users", Handler: c.List},
-        {Method: "GET", Path: "/users/:id", Handler: c.Show},
-        {Method: "POST", Path: "/users", Handler: c.Create},
-        {Method: "PUT", Path: "/users/:id", Handler: c.Update},
-        {Method: "DELETE", Path: "/users/:id", Handler: c.Delete},
-    }
+Import the module so the kernel picks up its routes:
+
+```go
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{ROUTES}
 }
 ```
 
 ## HTTP Methods
 
-Goose supports all standard HTTP methods:
+Goose provides a helper per verb:
 
-| Method    | Usage              | Example           |
-| --------- | ------------------ | ----------------- |
-| `GET`     | Retrieve resources | `GET /users`      |
-| `POST`    | Create resources   | `POST /users`     |
-| `PUT`     | Update resources   | `PUT /users/1`    |
-| `PATCH`   | Partial update     | `PATCH /users/1`  |
-| `DELETE`  | Delete resources   | `DELETE /users/1` |
-| `OPTIONS` | CORS preflight     | `OPTIONS /users`  |
-| `HEAD`    | Headers only       | `HEAD /users`     |
+| Helper          | Method | Example                  |
+| --------------- | ------ | ------------------------ |
+| `router.Get`    | GET    | `GET /users`             |
+| `router.Post`   | POST   | `POST /users`            |
+| `router.Put`    | PUT    | `PUT /users/:id`         |
+| `router.Patch`  | PATCH  | `PATCH /users/:id`       |
+| `router.Delete` | DELETE | `DELETE /users/:id`      |
+| `router.Cli`    | (CLI)  | `mycli users/list`       |
 
 ```go
-func (c *UserController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/users", Handler: c.List},
-        {Method: "POST", Path: "/users", Handler: c.Create},
-        {Method: "PUT", Path: "/users/:id", Handler: c.Update},
-        {Method: "PATCH", Path: "/users/:id", Handler: c.Patch},
-        {Method: "DELETE", Path: "/users/:id", Handler: c.Delete},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/users", []any{UserController{}, "List"}),
+    router.Post("/users", []any{UserController{}, "Create"}),
+    router.Put("/users/:id", []any{UserController{}, "Update"}),
+    router.Patch("/users/:id", []any{UserController{}, "Patch"}),
+    router.Delete("/users/:id", []any{UserController{}, "Delete"}),
+)
 ```
 
 ## Route Parameters
 
 ### Path Parameters
 
-Use `:name` syntax for dynamic segments:
+Use `:name` for dynamic segments. The value is bound to a DTO field via the `param` tag — handlers never read parameters off a context:
 
 ```go
 // Route: /users/:id
-func (c *UserController) Show(ctx types.Context) any {
-    id := ctx.Param("id")  // Extract parameter
-    return c.service.GetUser(id)
+type ShowDto struct {
+    ID string `param:"id"`
+}
+
+func (c *UserController) Show(dto *ShowDto) types.Output {
+    return output.JSON(c.service.GetUser(dto.ID))
 }
 ```
 
 ### Multiple Parameters
 
 ```go
-func (c *PostController) Routes() types.Routes {
-    return types.Routes{
-        // /users/:userId/posts/:postId
-        {Method: "GET", Path: "/users/:userId/posts/:postId", Handler: c.Show},
-    }
+// Route: /users/:userId/posts/:postId
+type ShowPostDto struct {
+    UserID string `param:"userId"`
+    PostID string `param:"postId"`
 }
 
-func (c *PostController) Show(ctx types.Context) any {
-    userId := ctx.Param("userId")
-    postId := ctx.Param("postId")
-    return c.service.GetUserPost(userId, postId)
+func (c *PostController) Show(dto *ShowPostDto) types.Output {
+    return output.JSON(c.service.GetUserPost(dto.UserID, dto.PostID))
 }
 ```
 
 ## Query Parameters
 
-Access query string parameters:
+Query string values bind through the `query` tag:
 
 ```go
 // GET /users?page=1&limit=10&search=john
-func (c *UserController) List(ctx types.Context) any {
-    page := ctx.Query("page")           // "1"
-    limit := ctx.Query("limit")         // "10"
-    search := ctx.Query("search")       // "john"
+type ListDto struct {
+    Page   int    `query:"page"`
+    Limit  int    `query:"limit"`
+    Search string `query:"search"`
+}
 
-    // With defaults
-    pageNum := ctx.QueryDefault("page", "1")
-
-    return c.service.ListUsers(page, limit, search)
+func (c *UserController) List(dto *ListDto) types.Output {
+    if dto.Page == 0 {
+        dto.Page = 1
+    }
+    return output.JSON(c.service.ListUsers(dto.Page, dto.Limit, dto.Search))
 }
 ```
 
+See [Requests](requests.md) for all binding tags.
+
 ## Route Groups
 
-Organize routes hierarchically using nested routes:
+Nest routes under a shared prefix with `router.Group`:
 
 ```go
-func (c *AppController) Routes() types.Routes {
-    return types.Routes{
-        {
-            Path: "/api",
-            Children: types.Routes{
-                {
-                    Path: "/v1",
-                    Children: types.Routes{
-                        {Method: "GET", Path: "/users", Handler: c.ListUsers},
-                        {Method: "GET", Path: "/users/:id", Handler: c.GetUser},
-                    },
-                },
-            },
-        },
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Group("/api",
+        router.Group("/v1",
+            router.Get("/users", []any{UserController{}, "List"}),
+            router.Get("/users/:id", []any{UserController{}, "Show"}),
+        ),
+    ),
+)
 // Results in: /api/v1/users, /api/v1/users/:id
 ```
 
 ## Route Middleware
 
-Apply middleware to specific routes:
+The verb helpers accept middleware as trailing arguments:
 
 ```go
-func (c *UserController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/users", Handler: c.List},  // Public
-        {
-            Method:      "POST",
-            Path:        "/users",
-            Handler:     c.Create,
-            Middlewares: types.Middlewares{&AuthMiddleware{}},  // Protected
-        },
-        {
-            Path:        "/admin",
-            Middlewares: types.Middlewares{&AdminMiddleware{}},
-            Children: types.Routes{
-                {Method: "GET", Path: "/users", Handler: c.AdminList},
-                {Method: "DELETE", Path: "/users/:id", Handler: c.AdminDelete},
-            },
-        },
+var ROUTES = router.ForRoutes(
+    router.Get("/users", []any{UserController{}, "List"}),                    // Public
+    router.Post("/users", []any{UserController{}, "Create"}, &AuthMiddleware{}), // Protected
+
+    router.Group("/admin",
+        router.Get("/users", []any{AdminController{}, "List"}),
+        router.Delete("/users/:id", []any{AdminController{}, "Delete"}),
+    ),
+)
+```
+
+Middleware attached to a group route applies to all of its children. Middleware still receives `types.Context` and returns an `error`:
+
+```go
+func (m *AuthMiddleware) Handle(ctx types.Context) error {
+    if !m.authService.IsAuthenticated(ctx) {
+        return errors.New("unauthorized")
+    }
+    return nil
+}
+```
+
+## Resource Routes
+
+For standard CRUD, register all five RESTful routes at once with `router.Resource`:
+
+```go
+var ROUTES = router.ForRoutes(
+    // POST /products, GET /products, GET/PATCH/DELETE /products/:id
+    router.Resource("/products", ProductController{}).All(),
+)
+```
+
+The controller must implement `Create`, `List`, `Get`, `Update`, and `Delete`. Narrow the set with `.Only(...)` or `.Except(...)`:
+
+```go
+router.Resource("/products", ProductController{}).Only("List", "Get")
+router.Resource("/products", ProductController{}).Except("Delete")
+```
+
+## Mounting Modules Under a Prefix
+
+`router.Mount` nests every route registered by a module (and its imports) under a prefix — the equivalent of NestJS's `RouterModule.register`:
+
+```go
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{
+        router.Mount("/api/v1", &UsersModule{}),
+        router.Mount("/api/v2", &UsersV2Module{}),
     }
 }
 ```
 
-## Wildcard Routes
+## Route Struct
 
-Match any path segment with `*`:
-
-```go
-func (c *FileController) Routes() types.Routes {
-    return types.Routes{
-        // Matches /files/anything/here
-        {Method: "GET", Path: "/files/*", Handler: c.Serve},
-    }
-}
-
-func (c *FileController) Serve(ctx types.Context) any {
-    // Handle file serving
-}
-```
-
-## Route Options
-
-Each route can have several options:
+The verb helpers construct `types.Route` values; you can also build them literally:
 
 ```go
-type Route struct {
-    Method      Method       // HTTP method (GET, POST, etc.)
-    Path        string       // URL path pattern
-    Handler     any          // Handler function
-    Middlewares Middlewares  // Route-specific middleware
-    Children    Routes       // Nested routes
+types.Route{
+    Method:      types.GET,      // HTTP method
+    Path:        "/users/:id",   // URL path pattern
+    Handler:     []any{UserController{}, "Show"},
+    Middlewares: types.Middlewares{&AuthMiddleware{}},
+    Children:    types.Routes{}, // Nested routes
 }
 ```
 
 ## CLI Routes (Commands)
 
-For CLI applications, routes define commands:
+For CLI apps, `router.Cli` maps a path to a command:
 
 ```go
-func (c *CliController) Routes() types.Routes {
-    return types.Routes{
-        {Path: "greet", Handler: c.Greet},         // goose cli greet
-        {Path: "users/list", Handler: c.ListUsers}, // goose cli users/list
-        {
-            Path: "db",
-            Children: types.Routes{
-                {Path: "migrate", Handler: c.Migrate},  // goose cli db/migrate
-                {Path: "seed", Handler: c.Seed},        // goose cli db/seed
-            },
-        },
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Cli("/", []any{AppController{}, "Help"}),          // default command
+    router.Cli("/greet", []any{GreetController{}, "Greet"}),  // mycli greet
+    router.Group("/db",
+        router.Cli("/migrate", []any{DbController{}, "Migrate"}), // mycli db/migrate
+        router.Cli("/seed", []any{DbController{}, "Seed"}),       // mycli db/seed
+    ),
+)
 ```
 
 ## Route Resolution
 
-Goose resolves routes in this order:
+Routes resolve in this order:
 
 1. Exact path match
 2. Pattern match with parameters
 3. Wildcard match
 4. 404 Not Found
 
-```go
+```
 Routes:
 - GET /users           (exact)
 - GET /users/:id       (parameter)
-- GET /files/*         (wildcard)
 
 Request: GET /users/123
-Match:   GET /users/:id (id = "123")
+Match:   GET /users/:id  (id = "123")
 ```
-
-## Route Caching
-
-Goose caches resolved routes for performance. The cache is automatically invalidated when routes change.
 
 ## Best Practices
 
 ### 1. RESTful Conventions
 
-Follow REST conventions for resource routes:
-
 ```go
-func (c *PostController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/posts", Handler: c.Index},        // List
-        {Method: "GET", Path: "/posts/:id", Handler: c.Show},      // Show one
-        {Method: "POST", Path: "/posts", Handler: c.Create},       // Create
-        {Method: "PUT", Path: "/posts/:id", Handler: c.Update},    // Update
-        {Method: "DELETE", Path: "/posts/:id", Handler: c.Delete}, // Delete
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/posts", []any{PostController{}, "Index"}),      // List
+    router.Get("/posts/:id", []any{PostController{}, "Show"}),   // Show one
+    router.Post("/posts", []any{PostController{}, "Create"}),    // Create
+    router.Put("/posts/:id", []any{PostController{}, "Update"}), // Update
+    router.Delete("/posts/:id", []any{PostController{}, "Delete"}), // Delete
+)
 ```
 
 ### 2. Version Your API
 
 ```go
-{
-    Path: "/api",
-    Children: types.Routes{
-        {
-            Path: "/v1",
-            Children: v1Routes,
-        },
-        {
-            Path: "/v2",
-            Children: v2Routes,
-        },
-    },
-}
+router.Group("/api",
+    router.Group("/v1", v1Routes...),
+    router.Group("/v2", v2Routes...),
+)
 ```
 
-### 3. Group by Feature
+### 3. Keep Routes in a `*.routes.go` File
 
-```go
-{
-    Path: "/admin",
-    Middlewares: types.Middlewares{&AdminAuthMiddleware{}},
-    Children: adminRoutes,
-}
-```
+Mirror the framework's convention: define a `ROUTES` module per feature and import it from the feature module.
 
 ## Next Steps
 

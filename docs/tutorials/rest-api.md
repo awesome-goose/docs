@@ -168,7 +168,10 @@ Update `app/auth/auth.controller.go`:
 ```go
 package auth
 
-import "github.com/awesome-goose/goose/types"
+import (
+    "github.com/awesome-goose/goose/io/output"
+    "github.com/awesome-goose/goose/types"
+)
 
 type AuthController struct {
     service *AuthService `inject:""`
@@ -185,32 +188,21 @@ type LoginDTO struct {
     Password string `json:"password" validate:"required"`
 }
 
-func (c *AuthController) Register(ctx types.Context) any {
-    var dto RegisterDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(map[string]string{"error": "Invalid request"})
-    }
-
+// The DTO is bound from the request body automatically.
+func (c *AuthController) Register(dto *RegisterDTO) types.Output {
     user, err := c.service.Register(dto.Email, dto.Password, dto.Name)
     if err != nil {
-        return ctx.Status(400).JSON(map[string]string{"error": err.Error()})
+        return output.BadRequest(err.Error())
     }
-
-    return ctx.Status(201).JSON(user)
+    return output.Created(user)
 }
 
-func (c *AuthController) Login(ctx types.Context) any {
-    var dto LoginDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(map[string]string{"error": "Invalid request"})
-    }
-
+func (c *AuthController) Login(dto *LoginDTO) types.Output {
     token, err := c.service.Login(dto.Email, dto.Password)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{"error": err.Error()})
+        return output.Unauthorized(err.Error())
     }
-
-    return map[string]string{"token": token}
+    return output.JSON(map[string]string{"token": token})
 }
 ```
 
@@ -219,13 +211,19 @@ Update `app/auth/auth.routes.go`:
 ```go
 package auth
 
-import "github.com/awesome-goose/goose/types"
+import "github.com/awesome-goose/goose/modules/router"
 
-func (c *AuthController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "POST", Path: "/auth/register", Handler: c.Register},
-        {Method: "POST", Path: "/auth/login", Handler: c.Login},
-    }
+var ROUTES = router.ForRoutes(
+    router.Post("/auth/register", []any{AuthController{}, "Register"}),
+    router.Post("/auth/login", []any{AuthController{}, "Login"}),
+)
+```
+
+Make sure the auth module imports these routes:
+
+```go
+func (m *AuthModule) Imports() []types.Module {
+    return []types.Module{ROUTES}
 }
 ```
 
@@ -314,85 +312,93 @@ Update `app/posts/posts.controller.go`:
 ```go
 package posts
 
-import "github.com/awesome-goose/goose/types"
+import (
+    "github.com/awesome-goose/goose/io/output"
+    "github.com/awesome-goose/goose/types"
+)
 
 type PostsController struct {
     service *PostsService `inject:""`
 }
 
+// EmptyDto is used by handlers that take no request input.
+type EmptyDto struct{}
+
+type PostIDDto struct {
+    ID string `param:"id"`
+}
+
 type CreatePostDTO struct {
     Title   string `json:"title" validate:"required"`
     Content string `json:"content" validate:"required"`
+    // Populated by AuthMiddleware via ctx.SetValue("user_id", ...)
+    AuthorID string `context:"user_id"`
 }
 
 type UpdatePostDTO struct {
+    ID        string `param:"id"`
     Title     string `json:"title"`
     Content   string `json:"content"`
     Published bool   `json:"published"`
 }
 
-func (c *PostsController) Index(ctx types.Context) any {
-    return c.service.GetAll()
+type MyPostsDto struct {
+    AuthorID string `context:"user_id"`
 }
 
-func (c *PostsController) Show(ctx types.Context) any {
-    post := c.service.GetByID(ctx.Param("id"))
+func (c *PostsController) Index(dto *EmptyDto) types.Output {
+    return output.JSON(c.service.GetAll())
+}
+
+func (c *PostsController) Show(dto *PostIDDto) types.Output {
+    post := c.service.GetByID(dto.ID)
     if post == nil {
-        return ctx.Status(404).JSON(map[string]string{"error": "Post not found"})
+        return output.NotFound("Post not found")
     }
-    return post
+    return output.JSON(post)
 }
 
-func (c *PostsController) Create(ctx types.Context) any {
-    var dto CreatePostDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(map[string]string{"error": "Invalid request"})
-    }
-
-    authorID := ctx.Get("user_id").(string)
-    post, err := c.service.Create(authorID, dto)
+func (c *PostsController) Create(dto *CreatePostDTO) types.Output {
+    post, err := c.service.Create(dto.AuthorID, *dto)
     if err != nil {
-        return ctx.Status(500).JSON(map[string]string{"error": err.Error()})
+        return output.InternalServerError(err.Error())
     }
-
-    return ctx.Status(201).JSON(post)
+    return output.Created(post)
 }
 
-func (c *PostsController) Update(ctx types.Context) any {
-    var dto UpdatePostDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(map[string]string{"error": "Invalid request"})
-    }
-
-    post, err := c.service.Update(ctx.Param("id"), dto)
+func (c *PostsController) Update(dto *UpdatePostDTO) types.Output {
+    post, err := c.service.Update(dto.ID, *dto)
     if err != nil {
-        return ctx.Status(500).JSON(map[string]string{"error": err.Error()})
+        return output.InternalServerError(err.Error())
     }
-
-    return post
+    return output.JSON(post)
 }
 
-func (c *PostsController) Delete(ctx types.Context) any {
-    if err := c.service.Delete(ctx.Param("id")); err != nil {
-        return ctx.Status(500).JSON(map[string]string{"error": err.Error()})
+func (c *PostsController) Delete(dto *PostIDDto) types.Output {
+    if err := c.service.Delete(dto.ID); err != nil {
+        return output.InternalServerError(err.Error())
     }
-    return ctx.Status(204).Send("")
+    return output.NoContent()
 }
 
-func (c *PostsController) MyPosts(ctx types.Context) any {
-    authorID := ctx.Get("user_id").(string)
-    return c.service.GetByAuthor(authorID)
+func (c *PostsController) MyPosts(dto *MyPostsDto) types.Output {
+    return output.JSON(c.service.GetByAuthor(dto.AuthorID))
 }
 ```
+
+> The `CreatePostDTO` and `UpdatePostDTO` service calls take the DTO by value, so update their signatures to `Create(authorID string, dto CreatePostDTO)` and `Update(id string, dto UpdatePostDTO)` as shown in Step 4 (they read only `Title`, `Content`, and `Published`).
 
 ## Step 5: Create Auth Middleware
 
 Create `app/auth/auth.middleware.go`:
 
+Middleware implements `Handle(ctx types.Context) error`. Returning an `error` aborts the request; returning `nil` continues to the handler. On success it stashes the authenticated user id with `ctx.SetValue`, which protected handlers read through a `context`-tagged DTO field.
+
 ```go
 package auth
 
 import (
+    "errors"
     "strings"
 
     "github.com/awesome-goose/goose/types"
@@ -402,22 +408,25 @@ type AuthMiddleware struct {
     service *AuthService `inject:""`
 }
 
-func (m *AuthMiddleware) Handle(ctx types.Context, next types.Next) any {
-    authHeader := ctx.Header("Authorization")
+func (m *AuthMiddleware) Handle(ctx types.Context) error {
+    authHeader := ""
+    if h := ctx.Request().Headers()["Authorization"]; len(h) > 0 {
+        authHeader = h[0]
+    }
     if authHeader == "" {
-        return ctx.Status(401).JSON(map[string]string{"error": "Missing authorization"})
+        return errors.New("missing authorization")
     }
 
     token := strings.TrimPrefix(authHeader, "Bearer ")
     claims, err := m.service.ValidateToken(token)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{"error": "Invalid token"})
+        return errors.New("invalid token")
     }
 
-    ctx.Set("user_id", claims.UserID)
-    ctx.Set("user_email", claims.Email)
+    ctx.SetValue("user_id", claims.UserID)
+    ctx.SetValue("user_email", claims.Email)
 
-    return next()
+    return nil
 }
 ```
 
@@ -430,27 +439,28 @@ package posts
 
 import (
     "blog-api/app/auth"
-    "github.com/awesome-goose/goose/types"
+
+    "github.com/awesome-goose/goose/modules/router"
 )
 
-func (c *PostsController) Routes() types.Routes {
-    authMiddleware := &auth.AuthMiddleware{}
+var ROUTES = router.ForRoutes(
+    // Public routes
+    router.Get("/posts", []any{PostsController{}, "Index"}),
+    router.Get("/posts/:id", []any{PostsController{}, "Show"}),
 
-    return types.Routes{
-        // Public routes
-        {Method: "GET", Path: "/posts", Handler: c.Index},
-        {Method: "GET", Path: "/posts/:id", Handler: c.Show},
+    // Protected routes — AuthMiddleware runs before the handler
+    router.Post("/posts", []any{PostsController{}, "Create"}, &auth.AuthMiddleware{}),
+    router.Put("/posts/:id", []any{PostsController{}, "Update"}, &auth.AuthMiddleware{}),
+    router.Delete("/posts/:id", []any{PostsController{}, "Delete"}, &auth.AuthMiddleware{}),
+    router.Get("/my-posts", []any{PostsController{}, "MyPosts"}, &auth.AuthMiddleware{}),
+)
+```
 
-        // Protected routes
-        {Method: "POST", Path: "/posts", Handler: c.Create,
-            Middlewares: []any{authMiddleware}},
-        {Method: "PUT", Path: "/posts/:id", Handler: c.Update,
-            Middlewares: []any{authMiddleware}},
-        {Method: "DELETE", Path: "/posts/:id", Handler: c.Delete,
-            Middlewares: []any{authMiddleware}},
-        {Method: "GET", Path: "/my-posts", Handler: c.MyPosts,
-            Middlewares: []any{authMiddleware}},
-    }
+And import it from the posts module:
+
+```go
+func (m *PostsModule) Imports() []types.Module {
+    return []types.Module{ROUTES}
 }
 ```
 
@@ -463,7 +473,6 @@ package app
 
 import (
     "blog-api/app/auth"
-    "blog-api/app/entities"
     "blog-api/app/posts"
 
     "github.com/awesome-goose/goose/types"
@@ -491,12 +500,15 @@ func (m *AppModule) Declarations() []any {
 
 Create `app/migrations.service.go`:
 
+The `Boot` hook runs once at startup (it satisfies the `types.Bootable` interface):
+
 ```go
 package app
 
 import (
     "blog-api/app/entities"
 
+    "github.com/awesome-goose/goose/types"
     "gorm.io/gorm"
 )
 
@@ -504,8 +516,8 @@ type MigrationService struct {
     db *gorm.DB `inject:""`
 }
 
-func (s *MigrationService) OnStart() {
-    s.db.AutoMigrate(
+func (s *MigrationService) Boot(k types.Kernel) error {
+    return s.db.AutoMigrate(
         &entities.User{},
         &entities.Post{},
     )

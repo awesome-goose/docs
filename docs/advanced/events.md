@@ -151,14 +151,10 @@ type OrderController struct {
     dispatcher   *Dispatcher   `inject:""`
 }
 
-func (c *OrderController) Create(ctx types.Context) any {
-    body, _ := ctx.Request().Body()
-    var dto CreateOrderDTO
-    json.Unmarshal(body, &dto)
-
+func (c *OrderController) Create(dto *CreateOrderDTO) types.Output {
     order, err := c.orderService.Create(dto)
     if err != nil {
-        return map[string]any{"error": err.Error(), "_status": 500}
+        return output.InternalServerError(err.Error())
     }
 
     c.dispatcher.DispatchAsync(&OrderPlaced{
@@ -168,7 +164,7 @@ func (c *OrderController) Create(ctx types.Context) any {
         Timestamp: time.Now(),
     })
 
-    return map[string]any{"data": order, "_status": 201}
+    return output.Created(order)
 }
 ```
 

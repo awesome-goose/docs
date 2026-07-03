@@ -142,19 +142,13 @@ type HealthController struct {
     kv *kv.KV  `inject:""`
 }
 
-func (c *HealthController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/health", Handler: c.Health},
-        {Method: "GET", Path: "/health/ready", Handler: c.Ready},
-        {Method: "GET", Path: "/health/live", Handler: c.Live},
-    }
+type EmptyDto struct{}
+
+func (c *HealthController) Health(dto *EmptyDto) types.Output {
+    return output.JSON(map[string]string{"status": "healthy"})
 }
 
-func (c *HealthController) Health(ctx types.Context) any {
-    return map[string]string{"status": "healthy"}
-}
-
-func (c *HealthController) Ready(ctx types.Context) any {
+func (c *HealthController) Ready(dto *EmptyDto) types.Output {
     // Check all dependencies
     checks := map[string]string{}
 
@@ -175,16 +169,26 @@ func (c *HealthController) Ready(ctx types.Context) any {
     // Determine overall status
     for _, status := range checks {
         if status == "unhealthy" {
-            return ctx.Status(503).JSON(checks)
+            return output.JSONWithCode(checks, 503)
         }
     }
 
-    return checks
+    return output.JSON(checks)
 }
 
-func (c *HealthController) Live(ctx types.Context) any {
-    return map[string]string{"status": "alive"}
+func (c *HealthController) Live(dto *EmptyDto) types.Output {
+    return output.JSON(map[string]string{"status": "alive"})
 }
+```
+
+Register the health endpoints:
+
+```go
+var ROUTES = router.ForRoutes(
+    router.Get("/health", []any{HealthController{}, "Health"}),
+    router.Get("/health/ready", []any{HealthController{}, "Ready"}),
+    router.Get("/health/live", []any{HealthController{}, "Live"}),
+)
 ```
 
 ## Graceful Shutdown

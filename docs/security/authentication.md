@@ -83,42 +83,43 @@ func (s *AuthService) ValidateToken(tokenString string) (*Claims, error) {
 
 ### Auth Middleware
 
+Middleware implements `Handle(ctx types.Context) error`. Returning an `error` aborts the request; returning `nil` continues to the handler. Stash the authenticated identity with `ctx.SetValue` so handlers can read it via a `context`-tagged DTO field.
+
 ```go
+import "errors"
+
 type AuthMiddleware struct {
     authService *AuthService `inject:""`
 }
 
-func (m *AuthMiddleware) Handle(ctx types.Context, next types.Next) any {
+func (m *AuthMiddleware) Handle(ctx types.Context) error {
     // Get token from header
-    authHeader := ctx.Header("Authorization")
+    authHeader := ""
+    if h := ctx.Request().Headers()["Authorization"]; len(h) > 0 {
+        authHeader = h[0]
+    }
     if authHeader == "" {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Missing authorization header",
-        })
+        return errors.New("missing authorization header")
     }
 
     // Parse Bearer token
     tokenString := strings.TrimPrefix(authHeader, "Bearer ")
     if tokenString == authHeader {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Invalid authorization format",
-        })
+        return errors.New("invalid authorization format")
     }
 
     // Validate token
     claims, err := m.authService.ValidateToken(tokenString)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Invalid token",
-        })
+        return errors.New("invalid token")
     }
 
-    // Set user in context
-    ctx.Set("user_id", claims.UserID)
-    ctx.Set("user_email", claims.Email)
-    ctx.Set("user_role", claims.Role)
+    // Set user in context for downstream handlers
+    ctx.SetValue("user_id", claims.UserID)
+    ctx.SetValue("user_email", claims.Email)
+    ctx.SetValue("user_role", claims.Role)
 
-    return next()
+    return nil
 }
 ```
 
@@ -141,42 +142,29 @@ type LoginResponse struct {
     User      *User  `json:"user"`
 }
 
-func (c *AuthController) Login(ctx types.Context) any {
-    var dto LoginDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(map[string]string{
-            "error": "Invalid request",
-        })
-    }
-
+func (c *AuthController) Login(dto *LoginDTO) types.Output {
     // Find user
     user, err := c.userService.GetByEmail(dto.Email)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Invalid credentials",
-        })
+        return output.Unauthorized("Invalid credentials")
     }
 
     // Check password
     if !CheckPassword(dto.Password, user.Password) {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Invalid credentials",
-        })
+        return output.Unauthorized("Invalid credentials")
     }
 
     // Generate token
     token, err := c.authService.GenerateToken(user)
     if err != nil {
-        return ctx.Status(500).JSON(map[string]string{
-            "error": "Failed to generate token",
-        })
+        return output.InternalServerError("Failed to generate token")
     }
 
-    return LoginResponse{
+    return output.JSON(LoginResponse{
         Token:     token,
         ExpiresIn: 86400, // 24 hours
         User:      user,
-    }
+    })
 }
 ```
 
@@ -189,20 +177,11 @@ type RegisterDTO struct {
     Name     string `json:"name" validate:"required"`
 }
 
-func (c *AuthController) Register(ctx types.Context) any {
-    var dto RegisterDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(map[string]string{
-            "error": "Invalid request",
-        })
-    }
-
+func (c *AuthController) Register(dto *RegisterDTO) types.Output {
     // Check if user exists
     existing, _ := c.userService.GetByEmail(dto.Email)
     if existing != nil {
-        return ctx.Status(409).JSON(map[string]string{
-            "error": "Email already registered",
-        })
+        return output.Conflict("Email already registered")
     }
 
     // Hash password
@@ -215,15 +194,13 @@ func (c *AuthController) Register(ctx types.Context) any {
         Name:     dto.Name,
     })
     if err != nil {
-        return ctx.Status(500).JSON(map[string]string{
-            "error": "Failed to create user",
-        })
+        return output.InternalServerError("Failed to create user")
     }
 
     // Generate token
     token, _ := c.authService.GenerateToken(user)
 
-    return ctx.Status(201).JSON(LoginResponse{
+    return output.Created(LoginResponse{
         Token:     token,
         ExpiresIn: 86400,
         User:      user,
@@ -234,14 +211,12 @@ func (c *AuthController) Register(ctx types.Context) any {
 ### Routes
 
 ```go
-func (c *AuthController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "POST", Path: "/auth/login", Handler: c.Login},
-        {Method: "POST", Path: "/auth/register", Handler: c.Register},
-        {Method: "POST", Path: "/auth/logout", Handler: c.Logout},
-        {Method: "GET", Path: "/auth/me", Handler: c.Me, Middlewares: []any{&AuthMiddleware{}}},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Post("/auth/login", []any{AuthController{}, "Login"}),
+    router.Post("/auth/register", []any{AuthController{}, "Register"}),
+    router.Post("/auth/logout", []any{AuthController{}, "Logout"}),
+    router.Get("/auth/me", []any{AuthController{}, "Me"}, &AuthMiddleware{}),
+)
 ```
 
 ## Session Authentication
@@ -286,27 +261,27 @@ type SessionMiddleware struct {
     sessionService *SessionService `inject:""`
 }
 
-func (m *SessionMiddleware) Handle(ctx types.Context, next types.Next) any {
-    // Get session from cookie
-    sessionID := ctx.Cookie("session_id")
+func (m *SessionMiddleware) Handle(ctx types.Context) error {
+    // Read the session id from the Cookie header
+    cookieHeader := ""
+    if h := ctx.Request().Headers()["Cookie"]; len(h) > 0 {
+        cookieHeader = h[0]
+    }
+    sessionID := parseCookie(cookieHeader, "session_id") // small helper
     if sessionID == "" {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Not authenticated",
-        })
+        return errors.New("not authenticated")
     }
 
     // Validate session
     session, err := m.sessionService.Get(sessionID)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Invalid session",
-        })
+        return errors.New("invalid session")
     }
 
     // Set user in context
-    ctx.Set("user_id", session.UserID)
+    ctx.SetValue("user_id", session.UserID)
 
-    return next()
+    return nil
 }
 ```
 
@@ -317,25 +292,24 @@ type APIKeyMiddleware struct {
     apiKeyService *APIKeyService `inject:""`
 }
 
-func (m *APIKeyMiddleware) Handle(ctx types.Context, next types.Next) any {
-    apiKey := ctx.Header("X-API-Key")
+func (m *APIKeyMiddleware) Handle(ctx types.Context) error {
+    apiKey := ""
+    if h := ctx.Request().Headers()["X-API-Key"]; len(h) > 0 {
+        apiKey = h[0]
+    }
     if apiKey == "" {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Missing API key",
-        })
+        return errors.New("missing API key")
     }
 
     key, err := m.apiKeyService.Validate(apiKey)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Invalid API key",
-        })
+        return errors.New("invalid API key")
     }
 
-    ctx.Set("api_key", key)
-    ctx.Set("user_id", key.UserID)
+    ctx.SetValue("api_key", key)
+    ctx.SetValue("user_id", key.UserID)
 
-    return next()
+    return nil
 }
 ```
 

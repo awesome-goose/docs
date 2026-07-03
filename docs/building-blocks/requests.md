@@ -1,34 +1,208 @@
 # Requests
 
-Learn how to handle incoming requests and extract data in Goose controllers.
-
-## Request Context
-
-Every handler receives a `types.Context` containing all request information:
+In Goose you don't pull data out of a request object inside your handler. Instead, each handler declares a **DTO** — a struct whose fields are annotated with binding tags — and the kernel populates it from the request before the handler runs.
 
 ```go
-func (c *UserController) Handle(ctx types.Context) any {
-    // Access request data through ctx.Request()
-    request := ctx.Request()
+type ShowPostDto struct {
+    UserID string `param:"id"`
+    PostID string `param:"postId"`
+}
+
+func (c *PostController) Show(dto *ShowPostDto) types.Output {
+    return output.JSON(c.service.GetUserPost(dto.UserID, dto.PostID))
 }
 ```
 
-## Context Interface
+## Binding Tags
 
-The `Context` interface provides:
+A field is filled from the first source whose tag is present. Supported tags:
+
+| Tag        | Source                                   | Example                          |
+| ---------- | ---------------------------------------- | -------------------------------- |
+| `param`    | Path parameter (`/users/:id`)            | `ID string \`param:"id"\``       |
+| `query`    | Query string (`?page=2`)                 | `Page string \`query:"page"\``   |
+| `header`   | Request header                           | `Auth string \`header:"Authorization"\`` |
+| `json`     | JSON body field                          | `Name string \`json:"name"\``    |
+| `form`     | URL-encoded / form body field            | `Email string \`form:"email"\``  |
+| `flag`     | CLI flag (`--name=John`)                 | `Name string \`flag:"name"\``    |
+| `context`  | Value set earlier via `ctx.SetValue`     | `User *User \`context:"user"\``  |
+
+Fields are converted to the field's type automatically — `string`, `int`/`uint`, `float`, `bool`, and `[]string` (comma-separated) are all supported. Complex `json`/`form` fields are unmarshaled into structs, slices, and maps.
+
+## Path Parameters
 
 ```go
-type Context interface {
-    Request() Request      // Access request data
-    Response() Response    // Access response methods
-    SetValue(key, value any)  // Store context values
-    GetValue(key any) any     // Retrieve context values
+// Route: /users/:id/posts/:postId
+type ShowDto struct {
+    UserID string `param:"id"`
+    PostID string `param:"postId"`
+}
+
+func (c *PostController) Show(dto *ShowDto) types.Output {
+    return output.JSON(c.service.GetUserPost(dto.UserID, dto.PostID))
 }
 ```
 
-## Request Interface
+## Query Parameters
 
-The `Request` interface provides:
+```go
+// GET /users?page=2&limit=10&sort=name&order=asc
+type ListDto struct {
+    Page  int    `query:"page"`
+    Limit int    `query:"limit"`
+    Sort  string `query:"sort"`
+    Order string `query:"order"`
+}
+
+func (c *UserController) List(dto *ListDto) types.Output {
+    return output.JSON(c.service.ListUsers(dto.Page, dto.Limit, dto.Sort, dto.Order))
+}
+```
+
+If a query parameter is absent, the field keeps its zero value. Apply your own defaults in the handler:
+
+```go
+func (c *UserController) List(dto *ListDto) types.Output {
+    if dto.Page == 0 {
+        dto.Page = 1
+    }
+    if dto.Limit == 0 {
+        dto.Limit = 10
+    }
+    return output.JSON(c.service.ListUsers(dto.Page, dto.Limit, dto.Sort, dto.Order))
+}
+```
+
+## JSON Body
+
+Annotate fields with `json` tags — the body is parsed once and bound for you:
+
+```go
+type CreateUserDto struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+    Age   int    `json:"age"`
+}
+
+func (c *UserController) Create(dto *CreateUserDto) types.Output {
+    return output.Created(c.service.CreateUser(dto))
+}
+```
+
+To capture the entire JSON body into a single field (e.g. a nested entity), use the `,merge` suffix:
+
+```go
+type CreateOrderDto struct {
+    Order OrderPayload `json:"body,merge"`
+}
+```
+
+## Form Data
+
+For URL-encoded form submissions, use the `form` tag:
+
+```go
+type ContactFormDto struct {
+    Name    string `form:"name"`
+    Email   string `form:"email"`
+    Message string `form:"message"`
+}
+
+func (c *WebController) SubmitContact(dto *ContactFormDto) types.Output {
+    c.service.SendContactEmail(dto)
+    return output.Redirect("/contact/thanks")
+}
+```
+
+## Headers
+
+Bind a header directly to a field:
+
+```go
+type ApiDto struct {
+    Authorization string `header:"Authorization"`
+    APIKey        string `header:"X-API-Key"`
+    RequestID     string `header:"X-Request-ID"`
+}
+
+func (c *ApiController) Handle(dto *ApiDto) types.Output {
+    return output.JSON(c.service.Process(dto.APIKey))
+}
+```
+
+Multi-value headers are bound to their first value. Declare `[]string` to receive comma-separated values as a slice.
+
+## Context Values (from Middleware)
+
+Middleware still works with `types.Context` and can stash values for later handlers:
+
+```go
+type AuthMiddleware struct {
+    authService *AuthService `inject:""`
+}
+
+func (m *AuthMiddleware) Handle(ctx types.Context) error {
+    user := m.authService.GetUser(ctx)
+    ctx.SetValue("user", user)
+    return nil
+}
+```
+
+A handler receives that value by declaring a field with the `context` tag:
+
+```go
+type ProfileDto struct {
+    User *User `context:"user"`
+}
+
+func (c *UserController) Profile(dto *ProfileDto) types.Output {
+    return output.JSON(dto.User)
+}
+```
+
+## CLI Arguments
+
+CLI flags bind through the `flag` tag:
+
+```go
+// Command: mycli greet --name=John --times=3
+type GreetDto struct {
+    Name  string `flag:"name"`
+    Times int    `flag:"times"`
+}
+
+func (c *CliController) Greet(dto *GreetDto) types.Output {
+    var buf strings.Builder
+    for i := 0; i < dto.Times; i++ {
+        buf.WriteString(fmt.Sprintf("Hello, %s!\n", dto.Name))
+    }
+    return output.Console(buf.String())
+}
+```
+
+## Request Validation
+
+Add `validate` tags alongside your binding tags and validate the populated DTO — see [Validation](validation.md):
+
+```go
+type CreateProductDto struct {
+    Name        string  `json:"name" validate:"required,min=3,max=100"`
+    Description string  `json:"description" validate:"max=500"`
+    Price       float64 `json:"price" validate:"required,gt=0"`
+    Category    string  `json:"category" validate:"required,oneof=electronics clothing food"`
+}
+
+func (c *ProductController) Create(dto *CreateProductDto) types.Output {
+    if err := c.validator.Validate(dto); err != nil {
+        return output.UnprocessableEntity("Validation failed", err)
+    }
+    return output.Created(c.service.CreateProduct(dto))
+}
+```
+
+## Raw Request Access
+
+The underlying `types.Context` and `types.Request` are still available where you have a context (for example, in middleware). The `Request` interface exposes:
 
 ```go
 type Request interface {
@@ -41,354 +215,29 @@ type Request interface {
 }
 ```
 
-## Path Parameters
-
-Extract dynamic path segments:
-
-```go
-// Route: /users/:id/posts/:postId
-func (c *PostController) Show(ctx types.Context) any {
-    params := ctx.Request().Params()
-    userId := params["id"]       // First parameter
-    postId := params["postId"]   // Second parameter
-
-    return c.service.GetUserPost(userId, postId)
-}
-```
-
-## Query Parameters
-
-Access URL query string values:
-
-```go
-// GET /users?page=2&limit=10&sort=name&order=asc
-func (c *UserController) List(ctx types.Context) any {
-    queries := ctx.Request().Queries()
-    page := queries["page"]             // "2"
-    limit := queries["limit"]           // "10"
-    sort := queries["sort"]             // "name"
-    order := queries["order"]           // "asc"
-
-    return c.service.ListUsers(page, limit, sort, order)
-}
-```
-
-### Helper for Query Defaults
-
-```go
-// Helper function for query defaults
-func getQueryOr(queries map[string]string, key, defaultVal string) string {
-    if val, ok := queries[key]; ok && val != "" {
-        return val
-    }
-    return defaultVal
-}
-
-func (c *UserController) List(ctx types.Context) any {
-    queries := ctx.Request().Queries()
-    page := getQueryOr(queries, "page", "1")
-    limit := getQueryOr(queries, "limit", "10")
-    // ...
-}
-```
-
-## Request Body
-
-### JSON Binding
-
-Parse JSON request body to a struct:
-
-```go
-import "encoding/json"
-
-type CreateUserDTO struct {
-    Name  string `json:"name"`
-    Email string `json:"email"`
-    Age   int    `json:"age"`
-}
-
-func (c *UserController) Create(ctx types.Context) any {
-    body, err := ctx.Request().Body()
-    if err != nil {
-        return map[string]string{"error": "Failed to read body"}
-    }
-
-    var dto CreateUserDTO
-    if err := json.Unmarshal(body, &dto); err != nil {
-        return map[string]string{"error": "Invalid JSON: " + err.Error()}
-    }
-
-    return c.service.CreateUser(dto)
-}
-```
-
-### Form Data
-
-Handle form submissions (parse manually or use a form parsing library):
-
-```go
-import (
-    "encoding/json"
-    "net/url"
-)
-
-type ContactFormDTO struct {
-    Name    string
-    Email   string
-    Message string
-}
-
-func (c *WebController) SubmitContact(ctx types.Context) any {
-    body, err := ctx.Request().Body()
-    if err != nil {
-        return map[string]string{"error": "Failed to read body"}
-    }
-
-    values, err := url.ParseQuery(string(body))
-    if err != nil {
-        return map[string]string{"error": "Invalid form data"}
-    }
-
-    dto := ContactFormDTO{
-        Name:    values.Get("name"),
-        Email:   values.Get("email"),
-        Message: values.Get("message"),
-    }
-
-    c.service.SendContactEmail(dto)
-    return map[string]string{"redirect": "/contact/thanks"}
-}
-```
-
-### Raw Body
-
-Access the raw request body:
-
-```go
-func (c *WebhookController) Handle(ctx types.Context) any {
-    body, err := ctx.Request().Body()
-    if err != nil {
-        return map[string]string{"error": "Failed to read body"}
-    }
-
-    // Process raw webhook payload
-    return c.processWebhook(body)
-}
-```
-
-## Headers
-
-Access request headers:
-
-```go
-func (c *ApiController) Handle(ctx types.Context) any {
-    headers := ctx.Request().Headers()
-
-    // Get header (returns []string for multi-value headers)
-    auth := headers["Authorization"]
-    contentType := headers["Content-Type"]
-    userAgent := headers["User-Agent"]
-
-    // Custom headers
-    apiKey := headers["X-API-Key"]
-    requestId := headers["X-Request-ID"]
-
-    // Get first value if exists
-    var authToken string
-    if len(auth) > 0 {
-        authToken = auth[0]
-    }
-
-    return nil
-}
-```
-
-## Context Values
-
-Store and retrieve values in the request context:
-
-```go
-// Set a value (e.g., in middleware)
-func (m *AuthMiddleware) Handle(ctx types.Context) error {
-    user := m.authService.GetUser(ctx)
-    ctx.SetValue("user", user)
-    return nil
-}
-
-// Get a value (e.g., in controller)
-func (c *UserController) Profile(ctx types.Context) any {
-    user := ctx.GetValue("user").(*User)
-    return user
-}
-```
-
-## Request Metadata
-
-Access request metadata through the Request interface:
-
-```go
-func (c *LoggingController) Handle(ctx types.Context) any {
-    req := ctx.Request()
-
-    // HTTP Method
-    method := req.Method()  // types.Method (GET, POST, etc.)
-
-    // Request paths (URL segments)
-    paths := req.Paths()    // []string{"users", "123"}
-
-    return nil
-}
-```
-
-## File Uploads
-
-Handle file uploads by parsing the request body:
-
-```go
-import (
-    "mime/multipart"
-    "net/http"
-)
-
-func (c *UploadController) Upload(ctx types.Context) any {
-    // Access raw response to get multipart form
-    raw := ctx.Response().Raw()
-
-    // For HTTP platforms, cast to http.ResponseWriter
-    // then parse multipart from the original request
-    // This is platform-specific handling
-
-    body, err := ctx.Request().Body()
-    if err != nil {
-        return map[string]string{"error": "Failed to read body"}
-    }
-
-    // Process the file data from body
-    // File handling depends on your HTTP server implementation
-
-    return map[string]string{
-        "message": "File uploaded",
-    }
-}
-```
-
-## Request Validation
-
-Combine binding with validation:
-
-```go
-import "encoding/json"
-
-type CreateProductDTO struct {
-    Name        string  `json:"name" validate:"required,min=3,max=100"`
-    Description string  `json:"description" validate:"max=500"`
-    Price       float64 `json:"price" validate:"required,gt=0"`
-    Category    string  `json:"category" validate:"required,oneof=electronics clothing food"`
-}
-
-func (c *ProductController) Create(ctx types.Context) any {
-    body, err := ctx.Request().Body()
-    if err != nil {
-        return map[string]string{"error": "Failed to read body"}
-    }
-
-    var dto CreateProductDTO
-    if err := json.Unmarshal(body, &dto); err != nil {
-        return map[string]string{"error": "Invalid JSON"}
-    }
-
-    // Validate using your validation library
-    if err := c.validate(&dto); err != nil {
-        return map[string]any{"error": "validation_failed", "details": err.Error()}
-    }
-
-    return c.service.CreateProduct(dto)
-}
-```
-
-## CLI Arguments
-
-For CLI applications, access command arguments through the request:
-
-```go
-// Command: mycli greet --name=John --times=3
-func (c *CliController) Greet(ctx types.Context) any {
-    queries := ctx.Request().Queries()
-    name := queries["name"]   // "John"
-    times := queries["times"] // "3" (as string, convert as needed)
-
-    // Convert to int
-    count, _ := strconv.Atoi(times)
-    for i := 0; i < count; i++ {
-        fmt.Printf("Hello, %s!\n", name)
-    }
-
-    return nil
-}
-```
+For advanced cases (webhooks with signature verification, multipart uploads), read the raw body in middleware and hand the parsed result to the handler via a context value.
 
 ## Best Practices
 
-### 1. Always Validate Input
+### 1. One DTO Per Handler
 
-```go
-import "encoding/json"
-
-func (c *UserController) Create(ctx types.Context) any {
-    body, err := ctx.Request().Body()
-    if err != nil {
-        return map[string]string{"error": "Failed to read body"}
-    }
-
-    var dto CreateUserDTO
-    if err := json.Unmarshal(body, &dto); err != nil {
-        return map[string]string{"error": "Invalid request body"}
-    }
-
-    // Validate before processing
-    if err := c.validate(&dto); err != nil {
-        return map[string]any{"error": "validation_failed", "details": err.Error()}
-    }
-
-    return c.service.CreateUser(dto)
-}
-```
+Declare exactly the fields a handler needs. It documents the endpoint's contract and keeps binding predictable.
 
 ### 2. Use Strong Types
 
 ```go
-// ✅ Good: Typed DTO
-type CreateUserDTO struct {
+// ✅ Good: typed DTO with tags
+type CreateUserDto struct {
     Name  string `json:"name"`
     Email string `json:"email"`
 }
 
-// ❌ Bad: Untyped map
-func (c *UserController) Create(ctx types.Context) any {
-    var data map[string]interface{}
-    body, _ := ctx.Request().Body()
-    json.Unmarshal(body, &data)
-    // No type safety
-}
+// ❌ Bad: reading and unmarshaling raw maps by hand
 ```
 
-### 3. Handle Missing Values
+### 3. Validate Before Using
 
-```go
-func (c *UserController) Show(ctx types.Context) any {
-    params := ctx.Request().Params()
-    id := params["id"]
-    if id == "" {
-        return map[string]string{"error": "ID is required"}
-    }
-
-    queries := ctx.Request().Queries()
-    page := getQueryOr(queries, "page", "1")
-    limit := getQueryOr(queries, "limit", "10")
-
-    return c.service.GetUser(id)
-}
-```
+Always run validation on the populated DTO before touching your services — see the validation example above.
 
 ## Next Steps
 

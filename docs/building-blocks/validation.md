@@ -118,24 +118,21 @@ type OrderItemDTO struct {
 
 ## Using Validation in Controllers
 
+The DTO is **bound automatically** from the request before your handler runs — there's no manual `Bind` step. To check it, inject a `types.Validator` and validate the populated DTO, returning `output.UnprocessableEntity` on failure:
+
 ```go
-func (c *UserController) Create(ctx types.Context) any {
-    var dto CreateUserDTO
+type UserController struct {
+    service   *UserService    `inject:""`
+    validator types.Validator `inject:""`
+}
 
-    // Bind request body
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Error(400, "Invalid JSON format")
+func (c *UserController) Create(dto *CreateUserDTO) types.Output {
+    // dto is already populated from the request body.
+    if err := c.validator.Validate(dto); err != nil {
+        return output.UnprocessableEntity("Validation failed", formatValidationErrors(err))
     }
 
-    // Validate DTO
-    if err := ctx.Validate(&dto); err != nil {
-        return ctx.Error(422, map[string]any{
-            "error": "validation_failed",
-            "details": formatValidationErrors(err),
-        })
-    }
-
-    return c.service.CreateUser(dto)
+    return output.Created(c.service.CreateUser(dto))
 }
 ```
 
@@ -175,21 +172,18 @@ func (dto *CreateOrderDTO) Validate() error {
 ### Using Custom Validation
 
 ```go
-func (c *OrderController) Create(ctx types.Context) any {
-    var dto CreateOrderDTO
-    ctx.Bind(&dto)
-
+func (c *OrderController) Create(dto *CreateOrderDTO) types.Output {
     // Tag-based validation
-    if err := ctx.Validate(&dto); err != nil {
-        return ctx.Error(422, err.Error())
+    if err := c.validator.Validate(dto); err != nil {
+        return output.UnprocessableEntity("Validation failed", err.Error())
     }
 
     // Custom validation
     if err := dto.Validate(); err != nil {
-        return ctx.Error(422, err.Error())
+        return output.UnprocessableEntity(err.Error(), nil)
     }
 
-    return c.service.CreateOrder(dto)
+    return output.Created(c.service.CreateOrder(dto))
 }
 ```
 
@@ -271,16 +265,23 @@ type ListUsersQuery struct {
     Order   string `query:"order" validate:"oneof=asc desc"`
 }
 
-func (c *UserController) List(ctx types.Context) any {
-    query := ListUsersQuery{
-        Page:  1,
-        Limit: 10,
-        Order: "asc",
+func (c *UserController) List(dto *ListUsersQuery) types.Output {
+    // Query params are bound automatically; apply defaults for omitted values.
+    if dto.Page == 0 {
+        dto.Page = 1
     }
-    ctx.BindQuery(&query)
-    ctx.Validate(&query)
+    if dto.Limit == 0 {
+        dto.Limit = 10
+    }
+    if dto.Order == "" {
+        dto.Order = "asc"
+    }
 
-    return c.service.ListUsers(query)
+    if err := c.validator.Validate(dto); err != nil {
+        return output.UnprocessableEntity("Validation failed", formatValidationErrors(err))
+    }
+
+    return output.JSON(c.service.ListUsers(dto))
 }
 ```
 

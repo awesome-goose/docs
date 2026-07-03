@@ -338,15 +338,13 @@ func (s *QueueService) OnShutdown() error {
 Implement health checks for production:
 
 ```go
-func (c *HealthController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/health", Handler: c.Check},
-        {Method: "GET", Path: "/ready", Handler: c.Ready},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/health", []any{HealthController{}, "Check"}),
+    router.Get("/ready", []any{HealthController{}, "Ready"}),
+)
 
-func (c *HealthController) Check(ctx types.Context) any {
-    return map[string]string{"status": "ok"}
+func (c *HealthController) Check(dto *EmptyDto) types.Output {
+    return output.JSON(map[string]string{"status": "ok"})
 }
 ```
 

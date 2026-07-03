@@ -39,9 +39,12 @@ type UserController struct {
     service *UserService `inject:""`
 }
 
-func (c *UserController) Show(ctx types.Context) any {
-    id := ctx.Param("id")
-    return c.service.GetUser(id)
+type ShowUserDto struct {
+    ID string `param:"id"`
+}
+
+func (c *UserController) Show(dto *ShowUserDto) types.Output {
+    return output.JSON(c.service.GetUser(dto.ID))
 }
 ```
 

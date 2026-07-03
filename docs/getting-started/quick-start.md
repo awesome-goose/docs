@@ -52,7 +52,8 @@ Response:
 
 ```json
 {
-  "message": "Welcome to Goose API!"
+  "success": true,
+  "data": { "message": "Welcome to Goose API!" }
 }
 ```
 
@@ -97,12 +98,9 @@ import "github.com/awesome-goose/goose/types"
 
 type AppModule struct{}
 
-// Declarations returns components this module provides
-func (m *AppModule) Declarations() []any {
-    return []any{
-        &AppController{},
-        &AppService{},
-    }
+// Imports returns modules this module depends on (including its routes)
+func (m *AppModule) Imports() []types.Module {
+    return []types.Module{ROUTES}
 }
 
 // Exports returns components available to other modules
@@ -110,9 +108,11 @@ func (m *AppModule) Exports() []any {
     return []any{}
 }
 
-// Imports returns modules this module depends on
-func (m *AppModule) Imports() []types.Module {
-    return []types.Module{}
+// Declarations returns components this module provides
+func (m *AppModule) Declarations() []any {
+    return []any{
+        &AppService{},
+    }
 }
 ```
 
@@ -121,14 +121,17 @@ func (m *AppModule) Imports() []types.Module {
 ```go
 package app
 
-import "github.com/awesome-goose/goose/types"
+import (
+    "github.com/awesome-goose/goose/io/output"
+    "github.com/awesome-goose/goose/types"
+)
 
 type AppController struct {
     service *AppService `inject:""`
 }
 
-func (c *AppController) Index(ctx types.Context) any {
-    return c.service.GetWelcomeMessage()
+func (c *AppController) Index(dto *EmptyDto) types.Output {
+    return output.JSON(c.service.GetWelcomeMessage())
 }
 ```
 
@@ -137,13 +140,20 @@ func (c *AppController) Index(ctx types.Context) any {
 ```go
 package app
 
-import "github.com/awesome-goose/goose/types"
+import "github.com/awesome-goose/goose/modules/router"
 
-func (c *AppController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/", Handler: c.Index},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/", []any{AppController{}, "Index"}),
+)
+```
+
+### app/app.dtos.go
+
+```go
+package app
+
+// EmptyDto is used by handlers that take no request input.
+type EmptyDto struct{}
 ```
 
 ## Adding a New Endpoint
@@ -155,11 +165,14 @@ Let's add a `/hello/:name` endpoint:
 In `app/app.controller.go`:
 
 ```go
-func (c *AppController) Hello(ctx types.Context) any {
-    name := ctx.Param("name")
-    return map[string]string{
-        "message": "Hello, " + name + "!",
-    }
+type HelloDto struct {
+    Name string `param:"name"`
+}
+
+func (c *AppController) Hello(dto *HelloDto) types.Output {
+    return output.JSON(map[string]string{
+        "message": "Hello, " + dto.Name + "!",
+    })
 }
 ```
 
@@ -168,12 +181,10 @@ func (c *AppController) Hello(ctx types.Context) any {
 In `app/app.routes.go`:
 
 ```go
-func (c *AppController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/", Handler: c.Index},
-        {Method: "GET", Path: "/hello/:name", Handler: c.Hello},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/", []any{AppController{}, "Index"}),
+    router.Get("/hello/:name", []any{AppController{}, "Hello"}),
+)
 ```
 
 ### 3. Test It
@@ -186,7 +197,8 @@ Response:
 
 ```json
 {
-  "message": "Hello, World!"
+  "success": true,
+  "data": { "message": "Hello, World!" }
 }
 ```
 

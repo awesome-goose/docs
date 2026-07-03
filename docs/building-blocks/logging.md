@@ -191,24 +191,19 @@ type RequestLoggerMiddleware struct {
 }
 
 func (m *RequestLoggerMiddleware) Handle(ctx types.Context) error {
-    start := time.Now()
+    req := ctx.Request()
 
-    // Log request start
-    m.log.Info("Request started",
-        "method", ctx.Method(),
-        "path", ctx.Path(),
-        "ip", ctx.ClientIP(),
+    ip := ""
+    if h := req.Headers()["X-Forwarded-For"]; len(h) > 0 {
+        ip = h[0]
+    }
+
+    // Middleware runs before the handler, so log the incoming request here.
+    m.log.Info("Request received",
+        "method", req.Method().String(),
+        "path", req.Paths(),
+        "ip", ip,
     )
-
-    // After handler (using deferred logging)
-    defer func() {
-        duration := time.Since(start)
-        m.log.Info("Request completed",
-            "method", ctx.Method(),
-            "path", ctx.Path(),
-            "duration_ms", duration.Milliseconds(),
-        )
-    }()
 
     return nil
 }

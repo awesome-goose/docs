@@ -6,13 +6,19 @@ Learn how to handle errors gracefully in your Goose applications.
 
 ### In Controllers
 
+Handlers return a `types.Output`. Translate errors into the semantic `output.*` helpers:
+
 ```go
-func (c *UserController) Show(ctx types.Context) any {
-    user, err := c.service.GetUserByID(ctx.Param("id"))
+type ShowUserDto struct {
+    ID string `param:"id"`
+}
+
+func (c *UserController) Show(dto *ShowUserDto) types.Output {
+    user, err := c.service.GetUserByID(dto.ID)
     if err != nil {
-        return ctx.Error(404, "User not found")
+        return output.NotFound("User not found")
     }
-    return user
+    return output.JSON(user)
 }
 ```
 
@@ -72,15 +78,15 @@ func (s *UserService) CreateUser(dto CreateUserDTO) (*User, error) {
 }
 
 // In controller
-func (c *UserController) Create(ctx types.Context) any {
+func (c *UserController) Create(dto *CreateUserDto) types.Output {
     user, err := c.service.CreateUser(dto)
     if err != nil {
         if errors.Is(err, ErrEmailInUse) {
-            return ctx.Error(409, "Email already in use")
+            return output.Conflict("Email already in use")
         }
-        return ctx.Error(500, "Failed to create user")
+        return output.InternalServerError("Failed to create user")
     }
-    return user
+    return output.Created(user)
 }
 ```
 
@@ -164,84 +170,51 @@ func ValidateUser(dto CreateUserDTO) ValidationErrors {
 ### Standard Error Response
 
 ```go
-func (c *UserController) Show(ctx types.Context) any {
-    user, err := c.service.GetUserByID(ctx.Param("id"))
+func (c *UserController) Show(dto *ShowUserDto) types.Output {
+    user, err := c.service.GetUserByID(dto.ID)
     if err != nil {
-        return c.handleError(ctx, err)
+        return handleError(c.log, err)
     }
-    return user
+    return output.JSON(user)
 }
 
-func (c *UserController) handleError(ctx types.Context, err error) any {
+func handleError(log types.Log, err error) types.Output {
     switch {
     case errors.Is(err, ErrNotFound):
-        return ctx.Error(404, map[string]any{
-            "error": "not_found",
-            "message": "Resource not found",
-        })
+        return output.NotFound("Resource not found")
     case errors.Is(err, ErrUnauthorized):
-        return ctx.Error(401, map[string]any{
-            "error": "unauthorized",
-            "message": "Authentication required",
-        })
+        return output.Unauthorized("Authentication required")
     case errors.Is(err, ErrForbidden):
-        return ctx.Error(403, map[string]any{
-            "error": "forbidden",
-            "message": "Access denied",
-        })
+        return output.Forbidden("Access denied")
     case errors.Is(err, ErrValidation):
-        return ctx.Error(422, map[string]any{
-            "error": "validation_failed",
-            "message": err.Error(),
-        })
+        return output.UnprocessableEntity(err.Error(), nil)
     default:
-        c.log.Error("Unhandled error", "error", err)
-        return ctx.Error(500, map[string]any{
-            "error": "internal_error",
-            "message": "An unexpected error occurred",
-        })
+        log.Error("Unhandled error", "error", err)
+        return output.InternalServerError("An unexpected error occurred")
     }
 }
 ```
 
-### Error Helper Functions
+### Built-in Error Helpers
+
+You don't need to write your own error responders — the `io/output` package already provides them, each with the correct status code and a consistent `{"success": false, "message": ...}` envelope:
 
 ```go
-func NotFound(ctx types.Context, resource string) any {
-    return ctx.Error(404, map[string]any{
-        "error": "not_found",
-        "message": fmt.Sprintf("%s not found", resource),
-    })
-}
-
-func BadRequest(ctx types.Context, message string) any {
-    return ctx.Error(400, map[string]any{
-        "error": "bad_request",
-        "message": message,
-    })
-}
-
-func Unauthorized(ctx types.Context) any {
-    return ctx.Error(401, map[string]any{
-        "error": "unauthorized",
-        "message": "Authentication required",
-    })
-}
-
-func InternalError(ctx types.Context) any {
-    return ctx.Error(500, map[string]any{
-        "error": "internal_error",
-        "message": "An unexpected error occurred",
-    })
-}
+output.BadRequest("...")           // 400
+output.Unauthorized("...")         // 401
+output.Forbidden("...")            // 403
+output.NotFound("...")             // 404
+output.Conflict("...")             // 409
+output.UnprocessableEntity(msg, errs) // 422
+output.InternalServerError("...")  // 500
 
 // Usage
-func (c *UserController) Show(ctx types.Context) any {
-    user, err := c.service.GetUserByID(ctx.Param("id"))
+func (c *UserController) Show(dto *ShowUserDto) types.Output {
+    user, err := c.service.GetUserByID(dto.ID)
     if err != nil {
-        return NotFound(ctx, "User")
+        return output.NotFound("User not found")
     }
-    return user
+    return output.JSON(user)
 }
 ```
 
@@ -272,31 +245,22 @@ if errors.Is(err, gorm.ErrRecordNotFound) {
 }
 ```
 
-## Panic Recovery
+## Prefer Errors Over Panics
 
-Goose automatically recovers from panics, but you can add custom handling:
+Handlers and services should return errors rather than panic. Convert a returned error into a response with the `output.*` helpers so the client always gets a well-formed body:
 
 ```go
-type RecoveryMiddleware struct {
-    log types.Log `inject:""`
-}
-
-func (m *RecoveryMiddleware) Handle(ctx types.Context) error {
-    defer func() {
-        if r := recover(); r != nil {
-            m.log.Error("Panic recovered",
-                "panic", r,
-                "stack", string(debug.Stack()))
-            ctx.SetStatus(500)
-            ctx.SetResponse(map[string]string{
-                "error": "internal_error",
-                "message": "An unexpected error occurred",
-            })
-        }
-    }()
-    return nil
+func (c *UserController) Show(dto *ShowUserDto) types.Output {
+    user, err := c.service.GetUserByID(dto.ID)
+    if err != nil {
+        c.log.Error("Failed to load user", "id", dto.ID, "error", err)
+        return output.InternalServerError("An unexpected error occurred")
+    }
+    return output.JSON(user)
 }
 ```
+
+Background workers (queues, cron) recover from panics in their jobs automatically, but request handlers do not — guard risky operations and return an error instead of letting a panic escape.
 
 ## Logging Errors
 
@@ -363,18 +327,20 @@ return err
 
 ```go
 // ✅ Good: Generic message to client
-func (c *Controller) Handle(ctx types.Context) any {
+func (c *Controller) Handle(dto *HandleDto) types.Output {
     if err != nil {
         c.log.Error("Database error", "error", err)
-        return ctx.Error(500, "An error occurred")
+        return output.InternalServerError("An error occurred")
     }
+    return output.JSON(result)
 }
 
 // ❌ Bad: Expose internal details
-func (c *Controller) Handle(ctx types.Context) any {
+func (c *Controller) Handle(dto *HandleDto) types.Output {
     if err != nil {
-        return ctx.Error(500, err.Error())  // May expose DB details
+        return output.InternalServerError(err.Error())  // May expose DB details
     }
+    return output.JSON(result)
 }
 ```
 

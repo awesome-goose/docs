@@ -425,15 +425,13 @@ type AppService struct {
     db *gorm.DB `inject:""`
 }
 
-func (s *AppService) OnStart() {
-    err := s.db.AutoMigrate(
+// Boot runs once at startup (implements types.Bootable).
+func (s *AppService) Boot(k types.Kernel) error {
+    return s.db.AutoMigrate(
         &User{},
         &Post{},
         &Comment{},
     )
-    if err != nil {
-        panic(err)
-    }
 }
 ```
 

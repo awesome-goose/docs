@@ -10,32 +10,39 @@ CORS controls which origins can access your API from browsers. Without proper CO
 
 ### Basic CORS Middleware
 
+Middleware sets response headers through `ctx.Response()` and returns `nil` to continue. It cannot itself write a preflight response, so pair it with an explicit `OPTIONS` route (see [Preflight Requests](#preflight-requests)).
+
 ```go
 type CORSMiddleware struct{}
 
-func (m *CORSMiddleware) Handle(ctx types.Context, next types.Next) any {
-    // Set CORS headers
-    ctx.SetHeader("Access-Control-Allow-Origin", "*")
-    ctx.SetHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-    ctx.SetHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-    // Handle preflight
-    if ctx.Method() == "OPTIONS" {
-        return ctx.Status(204).Send("")
-    }
-
-    return next()
+func (m *CORSMiddleware) Handle(ctx types.Context) error {
+    resp := ctx.Response()
+    resp.SetHeader("Access-Control-Allow-Origin", "*")
+    resp.SetHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+    resp.SetHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    return nil
 }
 ```
 
 ### Apply Globally
 
+Attach the middleware to a root group so it runs on every route, and add an OPTIONS handler for preflight:
+
 ```go
-func (c *AppController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/", Handler: c.Index, Middlewares: []any{&CORSMiddleware{}}},
-        // Apply to all routes...
-    }
+var ROUTES = router.ForRoutes(
+    types.Route{
+        Path:        "/",
+        Middlewares: types.Middlewares{&CORSMiddleware{}},
+        Children: types.Routes{
+            router.Get("/", []any{AppController{}, "Index"}),
+            // Preflight — answers any OPTIONS request with 204
+            {Method: "OPTIONS", Path: "/*", Handler: []any{AppController{}, "Preflight"}},
+        },
+    },
+)
+
+func (c *AppController) Preflight(dto *EmptyDto) types.Output {
+    return output.NoContent()
 }
 ```
 
@@ -79,37 +86,36 @@ func NewCORSMiddleware(config *CORSConfig) *CORSMiddleware {
     return &CORSMiddleware{config: config}
 }
 
-func (m *CORSMiddleware) Handle(ctx types.Context, next types.Next) any {
-    origin := ctx.Header("Origin")
+func (m *CORSMiddleware) Handle(ctx types.Context) error {
+    origin := ""
+    if h := ctx.Request().Headers()["Origin"]; len(h) > 0 {
+        origin = h[0]
+    }
 
     // Check if origin is allowed
     if !m.isOriginAllowed(origin) {
-        return next()
+        return nil
     }
 
-    // Set CORS headers
-    ctx.SetHeader("Access-Control-Allow-Origin", origin)
-    ctx.SetHeader("Access-Control-Allow-Methods", strings.Join(m.config.AllowedMethods, ", "))
-    ctx.SetHeader("Access-Control-Allow-Headers", strings.Join(m.config.AllowedHeaders, ", "))
+    // Set CORS headers on the response
+    resp := ctx.Response()
+    resp.SetHeader("Access-Control-Allow-Origin", origin)
+    resp.SetHeader("Access-Control-Allow-Methods", strings.Join(m.config.AllowedMethods, ", "))
+    resp.SetHeader("Access-Control-Allow-Headers", strings.Join(m.config.AllowedHeaders, ", "))
 
     if len(m.config.ExposedHeaders) > 0 {
-        ctx.SetHeader("Access-Control-Expose-Headers", strings.Join(m.config.ExposedHeaders, ", "))
+        resp.SetHeader("Access-Control-Expose-Headers", strings.Join(m.config.ExposedHeaders, ", "))
     }
 
     if m.config.AllowCredentials {
-        ctx.SetHeader("Access-Control-Allow-Credentials", "true")
+        resp.SetHeader("Access-Control-Allow-Credentials", "true")
     }
 
     if m.config.MaxAge > 0 {
-        ctx.SetHeader("Access-Control-Max-Age", strconv.Itoa(m.config.MaxAge))
+        resp.SetHeader("Access-Control-Max-Age", strconv.Itoa(m.config.MaxAge))
     }
 
-    // Handle preflight
-    if ctx.Method() == "OPTIONS" {
-        return ctx.Status(204).Send("")
-    }
-
-    return next()
+    return nil
 }
 
 func (m *CORSMiddleware) isOriginAllowed(origin string) bool {
@@ -220,19 +226,24 @@ CORS_ORIGINS=https://myapp.com,https://admin.myapp.com
 
 ## Preflight Requests
 
-Browsers send OPTIONS requests before certain requests:
+Browsers send an `OPTIONS` request before certain cross-origin requests. Because middleware can't emit its own response, register an `OPTIONS` route that returns `204` — the CORS middleware still runs first and attaches the headers:
 
 ```go
-func (m *CORSMiddleware) Handle(ctx types.Context, next types.Next) any {
-    // Set CORS headers first
-    m.setCORSHeaders(ctx)
+var ROUTES = router.ForRoutes(
+    types.Route{
+        Path:        "/api",
+        Middlewares: types.Middlewares{NewCORSMiddleware(nil)},
+        Children: types.Routes{
+            router.Get("/users", []any{UserController{}, "List"}),
+            router.Post("/users", []any{UserController{}, "Create"}),
+            // Preflight handler
+            {Method: "OPTIONS", Path: "/*", Handler: []any{UserController{}, "Preflight"}},
+        },
+    },
+)
 
-    // Handle preflight (OPTIONS) immediately
-    if ctx.Method() == "OPTIONS" {
-        return ctx.Status(204).Send("")
-    }
-
-    return next()
+func (c *UserController) Preflight(dto *EmptyDto) types.Output {
+    return output.NoContent()
 }
 ```
 
@@ -241,24 +252,24 @@ func (m *CORSMiddleware) Handle(ctx types.Context, next types.Next) any {
 Apply different CORS settings to specific routes:
 
 ```go
-func (c *Controller) Routes() types.Routes {
-    publicCORS := NewCORSMiddleware(&CORSConfig{
+var (
+    publicCORS = NewCORSMiddleware(&CORSConfig{
         AllowedOrigins: []string{"*"},
     })
 
-    privateCORS := NewCORSMiddleware(&CORSConfig{
+    privateCORS = NewCORSMiddleware(&CORSConfig{
         AllowedOrigins:   []string{"https://admin.myapp.com"},
         AllowCredentials: true,
     })
 
-    return types.Routes{
+    ROUTES = router.ForRoutes(
         // Public API - allow all origins
-        {Method: "GET", Path: "/api/public", Handler: c.PublicData, Middlewares: []any{publicCORS}},
+        router.Get("/api/public", []any{Controller{}, "PublicData"}, publicCORS),
 
         // Admin API - restricted origins
-        {Method: "GET", Path: "/api/admin", Handler: c.AdminData, Middlewares: []any{privateCORS, &AuthMiddleware{}}},
-    }
-}
+        router.Get("/api/admin", []any{Controller{}, "AdminData"}, privateCORS, &AuthMiddleware{}),
+    )
+)
 ```
 
 ## Wildcard Subdomains
@@ -296,17 +307,21 @@ cors := NewCORSMiddleware(&CORSConfig{
 ### Log CORS Requests
 
 ```go
-func (m *CORSMiddleware) Handle(ctx types.Context, next types.Next) any {
-    origin := ctx.Header("Origin")
-    method := ctx.Method()
+func (m *CORSMiddleware) Handle(ctx types.Context) error {
+    req := ctx.Request()
+    origin := ""
+    if h := req.Headers()["Origin"]; len(h) > 0 {
+        origin = h[0]
+    }
 
-    log.Printf("CORS request: origin=%s method=%s path=%s", origin, method, ctx.Path())
+    log.Printf("CORS request: origin=%s method=%s path=%v", origin, req.Method().String(), req.Paths())
 
     if !m.isOriginAllowed(origin) {
         log.Printf("CORS blocked: origin %s not in allowed list", origin)
     }
 
     // ... rest of middleware
+    return nil
 }
 ```
 

@@ -17,39 +17,38 @@ Goose provides built-in security features to protect your applications from comm
 ### Basic Authentication
 
 ```go
+import "errors"
+
 type AuthMiddleware struct {
     userService *UserService `inject:""`
 }
 
-func (m *AuthMiddleware) Handle(ctx types.Context, next types.Next) any {
-    token := ctx.Header("Authorization")
+func (m *AuthMiddleware) Handle(ctx types.Context) error {
+    token := ""
+    if h := ctx.Request().Headers()["Authorization"]; len(h) > 0 {
+        token = h[0]
+    }
     if token == "" {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Unauthorized",
-        })
+        return errors.New("unauthorized")
     }
 
     user, err := m.userService.ValidateToken(token)
     if err != nil {
-        return ctx.Status(401).JSON(map[string]string{
-            "error": "Invalid token",
-        })
+        return errors.New("invalid token")
     }
 
-    ctx.Set("user", user)
-    return next()
+    ctx.SetValue("user", user)
+    return nil
 }
 ```
 
 ### Apply to Routes
 
 ```go
-func (c *Controller) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/public", Handler: c.Public},
-        {Method: "GET", Path: "/private", Handler: c.Private, Middlewares: []any{&AuthMiddleware{}}},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/public", []any{Controller{}, "Public"}),
+    router.Get("/private", []any{Controller{}, "Private"}, &AuthMiddleware{}),
+)
 ```
 
 ## Security Best Practices
@@ -80,12 +79,13 @@ type CreateUserDTO struct {
     Name     string `json:"name" validate:"required,max=100"`
 }
 
-func (c *Controller) Create(ctx types.Context) any {
-    var dto CreateUserDTO
-    if err := ctx.Bind(&dto); err != nil {
-        return ctx.Status(400).JSON(errors.ValidationError(err))
+func (c *Controller) Create(dto *CreateUserDTO) types.Output {
+    // dto is bound automatically; validate it with an injected types.Validator
+    if err := c.validator.Validate(dto); err != nil {
+        return output.UnprocessableEntity("Validation failed", err)
     }
     // Proceed with validated data
+    return output.Created(c.service.Create(dto))
 }
 ```
 
@@ -126,16 +126,12 @@ Don't expose sensitive information:
 ```go
 // Good - generic message
 if err != nil {
-    return ctx.Status(401).JSON(map[string]string{
-        "error": "Invalid credentials",
-    })
+    return output.Unauthorized("Invalid credentials")
 }
 
 // Bad - reveals too much
 if err != nil {
-    return ctx.Status(401).JSON(map[string]string{
-        "error": "User not found in database table users", // Reveals info!
-    })
+    return output.Unauthorized("User not found in database table users") // Reveals info!
 }
 ```
 
@@ -146,33 +142,33 @@ Add security headers:
 ```go
 type SecurityMiddleware struct{}
 
-func (m *SecurityMiddleware) Handle(ctx types.Context, next types.Next) any {
+func (m *SecurityMiddleware) Handle(ctx types.Context) error {
+    resp := ctx.Response()
+
     // Prevent XSS
-    ctx.SetHeader("X-XSS-Protection", "1; mode=block")
+    resp.SetHeader("X-XSS-Protection", "1; mode=block")
 
     // Prevent clickjacking
-    ctx.SetHeader("X-Frame-Options", "DENY")
+    resp.SetHeader("X-Frame-Options", "DENY")
 
     // Prevent MIME sniffing
-    ctx.SetHeader("X-Content-Type-Options", "nosniff")
+    resp.SetHeader("X-Content-Type-Options", "nosniff")
 
     // HSTS
-    ctx.SetHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    resp.SetHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
-    return next()
+    return nil
 }
 ```
 
 ## HTTPS
 
-Always use HTTPS in production:
+Always use HTTPS in production. The platform listens over plain HTTP, so terminate TLS at a reverse proxy (nginx, Caddy, or your cloud load balancer) in front of the app:
 
 ```go
-// In production, enable HTTPS
 platform := api.NewPlatform(
     api.WithHost("0.0.0.0"),
-    api.WithPort(443),
-    api.WithTLS("/path/to/cert.pem", "/path/to/key.pem"),
+    api.WithPort(8080), // proxy forwards HTTPS traffic here
 )
 ```
 

@@ -85,50 +85,44 @@ initializers := []func(types.Container) error{
 
 ### JSON Responses
 
+Handlers return a `types.Output`. Use `output.JSON` and the semantic status helpers:
+
 ```go
-func (c *Controller) Index(ctx types.Context) any {
-    users := c.service.GetAll()
-    return users  // Automatically serialized to JSON
+type ShowDto struct {
+    ID string `param:"id"`
 }
 
-func (c *Controller) Show(ctx types.Context) any {
-    user := c.service.GetByID(ctx.Request().Params()["id"])
+func (c *Controller) Index(dto *EmptyDto) types.Output {
+    return output.JSON(c.service.GetAll())
+}
+
+func (c *Controller) Show(dto *ShowDto) types.Output {
+    user := c.service.GetByID(dto.ID)
     if user == nil {
-        return map[string]any{
-            "error": "User not found",
-            "_status": 404,
-        }
+        return output.NotFound("User not found")
     }
-    return user
+    return output.JSON(user)
 }
 ```
 
 ### Custom Status Codes
 
 ```go
-func (c *Controller) Create(ctx types.Context) any {
+func (c *Controller) Create(dto *CreateUserDTO) types.Output {
     user, err := c.service.Create(dto)
     if err != nil {
-        return map[string]any{
-            "error": err.Error(),
-            "_status": 400,
-        }
+        return output.BadRequest(err.Error())
     }
-    return map[string]any{
-        "data": user,
-        "_status": 201,
-    }
+    return output.Created(user)
 }
 ```
 
 ### Empty Response
 
 ```go
-func (c *Controller) Delete(ctx types.Context) any {
-    c.service.Delete(ctx.Request().Params()["id"])
-    return map[string]any{
-        "_status": 204,
-    }
+func (c *Controller) Delete(dto *ShowDto) types.Output {
+    c.service.Delete(dto.ID)
+    return output.NoContent()
 }
 ```
 
@@ -136,52 +130,43 @@ func (c *Controller) Delete(ctx types.Context) any {
 
 ### Request Body
 
-```go
-import "encoding/json"
+The body is bound to your DTO automatically via `json` tags — no manual reading or unmarshaling:
 
+```go
 type CreateUserDTO struct {
     Email string `json:"email" validate:"required,email"`
     Name  string `json:"name" validate:"required"`
 }
 
-func (c *Controller) Create(ctx types.Context) any {
-    body, err := ctx.Request().Body()
-    if err != nil {
-        return map[string]any{
-            "error": "Failed to read body",
-            "_status": 400,
-        }
-    }
-    var dto CreateUserDTO
-    if err := json.Unmarshal(body, &dto); err != nil {
-        return map[string]any{
-            "error": "Invalid request body",
-            "_status": 400,
-        }
-    }
-    // Use dto...
+func (c *Controller) Create(dto *CreateUserDTO) types.Output {
+    // dto is already populated. Validate, then use it.
+    return output.Created(c.service.Create(dto))
 }
 ```
 
 ### Query Parameters
 
 ```go
-func (c *Controller) Index(ctx types.Context) any {
-    queries := ctx.Request().Queries()
-    page := queries["page"]
-    limit := queries["limit"]
-    sort := queries["sort"]
+type IndexDto struct {
+    Page  int    `query:"page"`
+    Limit int    `query:"limit"`
+    Sort  string `query:"sort"`
+}
 
-    return c.service.GetPaginated(page, limit, sort)
+func (c *Controller) Index(dto *IndexDto) types.Output {
+    return output.JSON(c.service.GetPaginated(dto.Page, dto.Limit, dto.Sort))
 }
 ```
 
 ### Path Parameters
 
 ```go
-func (c *Controller) Show(ctx types.Context) any {
-    id := ctx.Request().Params()["id"]
-    return c.service.GetByID(id)
+type ShowDto struct {
+    ID string `param:"id"`
+}
+
+func (c *Controller) Show(dto *ShowDto) types.Output {
+    return output.JSON(c.service.GetByID(dto.ID))
 }
 ```
 
@@ -222,47 +207,51 @@ func (m *AuthMiddleware) Handle(ctx types.Context) error {
 
 ### Apply Middleware
 
+Pass middleware as trailing arguments to the route helpers:
+
 ```go
-func (c *UserController) Routes() types.Routes {
-    return types.Routes{
-        {Method: "GET", Path: "/users", Handler: c.Index},
-        {Method: "GET", Path: "/users/:id", Handler: c.Show},
-        {Method: "POST", Path: "/users", Handler: c.Create,
-            Middlewares: []any{&AuthMiddleware{}}},
-    }
-}
+var ROUTES = router.ForRoutes(
+    router.Get("/users", []any{UserController{}, "Index"}),
+    router.Get("/users/:id", []any{UserController{}, "Show"}),
+    router.Post("/users", []any{UserController{}, "Create"}, &AuthMiddleware{}),
+)
 ```
 
 ## API Versioning
 
 ### URL Path Versioning
 
+Nest each version's routes under a prefix with `router.Mount`, then start a single instance:
+
 ```go
-// v1 module
+// v1 module — imports its own routes
 type V1Module struct{}
 
-func (m *V1Module) Declarations() []any {
-    return []any{
-        &v1.UsersController{},
+func (m *V1Module) Imports() []types.Module {
+    return []types.Module{
+        router.ForRoutes(
+            router.Get("/users", []any{v1.UsersController{}, "Index"}),
+        ),
     }
 }
+func (m *V1Module) Exports() []any      { return []any{} }
+func (m *V1Module) Declarations() []any { return []any{} }
 
-// v2 module
-type V2Module struct{}
+// Root module mounts each version under a prefix
+type RootModule struct{}
 
-func (m *V2Module) Declarations() []any {
-    return []any{
-        &v2.UsersController{},
+func (m *RootModule) Imports() []types.Module {
+    return []types.Module{
+        router.Mount("/api/v1", &V1Module{}),
+        router.Mount("/api/v2", &V2Module{}),
     }
 }
+func (m *RootModule) Exports() []any      { return []any{} }
+func (m *RootModule) Declarations() []any { return []any{} }
 
-// Register with prefixes
+// Start once
 platform := api.NewPlatform(api.WithPort(8080))
-
-goose.Start(
-    goose.API(platform, &V1Module{}, nil, api.WithPrefix("/api/v1")),
-    goose.API(platform, &V2Module{}, nil, api.WithPrefix("/api/v2")),
-)
+goose.Start(goose.API(platform, &RootModule{}, nil))
 ```
 
 ### Header Versioning
@@ -286,33 +275,15 @@ func (m *VersionMiddleware) Handle(ctx types.Context) error {
 ### Standard Error Response
 
 ```go
-type ErrorResponse struct {
-    Error   string            `json:"error"`
-    Code    string            `json:"code,omitempty"`
-    Details map[string]string `json:"details,omitempty"`
-}
-
-func (c *Controller) Create(ctx types.Context) any {
+func (c *Controller) Create(dto *CreateUserDTO) types.Output {
     user, err := c.service.Create(dto)
     if err != nil {
         if validationErr, ok := err.(*ValidationError); ok {
-            return map[string]any{
-                "error":   "Validation failed",
-                "code":    "VALIDATION_ERROR",
-                "details": validationErr.Fields,
-                "_status": 400,
-            }
+            return output.UnprocessableEntity("Validation failed", validationErr.Fields)
         }
-        return map[string]any{
-            "error":   "Internal server error",
-            "code":    "INTERNAL_ERROR",
-            "_status": 500,
-        }
+        return output.InternalServerError("Internal server error")
     }
-    return map[string]any{
-        "data":    user,
-        "_status": 201,
-    }
+    return output.Created(user)
 }
 ```
 
@@ -326,16 +297,11 @@ func (m *CORSMiddleware) Handle(ctx types.Context) error {
     resp.SetHeader("Access-Control-Allow-Origin", "*")
     resp.SetHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
     resp.SetHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-    if ctx.Request().Method() == types.OPTIONS {
-        // Handle preflight request
-        resp.Write(types.SerialJSON, []byte(""), 204)
-        return nil
-    }
-
     return nil
 }
 ```
+
+Middleware sets headers on the shared response and returns `nil` to continue the chain (or an `error` to stop it). For a ready-made implementation, see [Security → CORS](../security/cors.md).
 
 ## Best Practices
 
