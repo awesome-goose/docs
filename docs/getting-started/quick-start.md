@@ -224,6 +224,16 @@ goose app --name=mymulti --template=multi
 
 This creates an application that combines API, Web, and CLI platforms.
 
+### Single-Page Application
+
+```bash
+goose app --name=myspa --template=spa --framework=react   # or vue | svelte | ng
+```
+
+This creates a Go JSON API and a frontend served together as one service,
+with a Makefile covering install, dev, build, and distribution. See the
+[SPA Platform](../platforms/spa.md) guide.
+
 ## Adding Modules
 
 Generate a new module in your application:

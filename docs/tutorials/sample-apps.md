@@ -18,6 +18,7 @@ The **Goose Sandbox** contains reference implementations for all supported platf
 | [web/](https://github.com/awesome-goose/sandbox/tree/main/web)     | Server-rendered web application | Web             |
 | [cli/](https://github.com/awesome-goose/sandbox/tree/main/cli)     | Command-line interface tool     | CLI             |
 | [multi/](https://github.com/awesome-goose/sandbox/tree/main/multi) | Multi-platform application      | API + Web + CLI |
+| [spa/](https://github.com/awesome-goose/sandbox/tree/main/spa)     | Single-page app (Angular)       | SPA             |
 
 ---
 
@@ -104,6 +105,26 @@ This example shows how to:
 
 ---
 
+## SPA Example
+
+A single-page application demonstrating:
+
+- One service serving both `/api` JSON routes and an Angular frontend
+- `index.html` fallback for client-side routing
+- An in-memory resource module (no database required)
+- A Makefile-driven install / dev / build / dist workflow
+
+```bash
+cd sandbox/spa
+make install   # go mod tidy + npm install
+make run       # ng build -> public/, then server at http://localhost:8080
+```
+
+During development, run `make dev` to get the Go backend and the Angular
+dev server (with `/api` proxying and hot reload) together.
+
+---
+
 ## Project Structure
 
 Each sandbox application follows the standard Goose module structure:
@@ -141,7 +162,7 @@ app/
 2. Choose an example:
 
    ```bash
-   cd api  # or web, cli, multi
+   cd api  # or web, cli, multi, spa
    ```
 
 3. Install dependencies and run:
@@ -168,6 +189,7 @@ goose app --name=myproject --template=api
 goose app --name=myproject --template=web
 goose app --name=myproject --template=cli
 goose app --name=myproject --template=multi
+goose app --name=myproject --template=spa --framework=react
 ```
 
 ---

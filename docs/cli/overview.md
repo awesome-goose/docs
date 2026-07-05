@@ -4,7 +4,7 @@ The Goose CLI is a command-line tool for scaffolding and managing Goose framewor
 
 ## Features
 
-- **Application Scaffolding** - Create new API, Web, or CLI applications
+- **Application Scaffolding** - Create new API, Web, SPA, or CLI applications
 - **Module Generation** - Add modules to existing projects
 - **Code Generation** - Generate controllers, services, entities
 - **Project Management** - Manage application configuration
@@ -49,6 +49,7 @@ goose app --name=myapi --template=api
 goose app --name=myweb --template=web
 goose app --name=mycli --template=cli
 goose app --name=mymulti --template=multi
+goose app --name=myspa --template=spa --framework=react
 
 # Generate modules
 goose g module --name=users --type=plain

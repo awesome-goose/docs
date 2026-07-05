@@ -149,17 +149,63 @@ mymulti/
         └── entities/
 ```
 
+### SPA Template
+
+Create a single-page application — a Go JSON API and a frontend served together as one service. Supports React, Vue, Svelte, and Angular:
+
+```bash
+goose app --name=myspa --template=spa --framework=react   # or vue | svelte | ng
+```
+
+**Generated structure:**
+
+```
+myspa/
+├── .env
+├── .gitignore
+├── go.mod
+├── main.go                 # Goose SPA platform (:8080)
+├── Makefile                # install / dev / build / dist workflow
+├── README.md
+├── app/                    # Backend modules (JSON API under /api)
+│   ├── app.module.go
+│   ├── app.controller.go
+│   ├── app.routes.go
+│   ├── app.service.go
+│   └── app.dtos.go
+├── frontend/               # Chosen framework's source
+│   ├── package.json        # dev + build npm scripts
+│   └── src/
+└── tests/
+```
+
+**Features included:**
+
+- One HTTP service: `/api/*` JSON routes + static frontend with `index.html` fallback for client-side routing
+- Frontend pre-wired to build into `public/` and proxy `/api` to the backend during development
+- Makefile targets: `install`, `dev`, `dev-backend`, `dev-frontend`, `build-frontend`, `build`, `dist`, `run`, `test`, `clean`
+
+**Workflow:**
+
+```bash
+cd myspa
+make install    # go mod tidy + npm install
+make dev        # Go backend (:8080) + frontend dev server with hot reload
+make dist       # production bundle: Go binary + built frontend in dist/
+```
+
 ## Command Options
 
 ```bash
-goose app --name=<name> --template=<template> [--path=<directory>]
+goose app --name=<name> --template=<template> [--framework=<framework>] [--path=<directory>]
 ```
 
-| Flag         | Description      | Required | Default           |
-| ------------ | ---------------- | -------- | ----------------- |
-| `--name`     | Application name | Yes      | -                 |
-| `--template` | Template type    | Yes      | -                 |
-| `--path`     | Output directory | No       | Current directory |
+| Flag          | Description        | Required           | Default           |
+| ------------- | ------------------ | ------------------ | ----------------- |
+| `--name`      | Application name   | Yes                | -                 |
+| `--template`  | Template type      | Yes                | -                 |
+| `--framework` | Frontend framework (`react`, `vue`, `svelte`, `ng`) | With `--template=spa` | - |
+| `--path`      | Output directory   | No                 | Current directory |
 
 ### Examples
 
@@ -178,6 +224,9 @@ goose app --name=tools --template=cli
 
 # Create multi-platform app
 goose app --name=platform --template=multi
+
+# Create single-page app with an Angular frontend
+goose app --name=dashboard --template=spa --framework=ng
 ```
 
 ## After Creating

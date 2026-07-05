@@ -331,8 +331,11 @@ func (c *CliController) GetUser(dto *GetUserDto) types.Output {
 ### Example: E-Commerce
 
 ```go
-// API: Mobile app, SPA frontend
+// API: Mobile app clients
 goose.API(apiPlatform, apiModule, nil)
+
+// SPA: Storefront single-page app + its JSON API as one service
+goose.SPA(spaPlatform, spaModule, nil)
 
 // Web: Server-rendered store pages
 goose.Web(webPlatform, webModule, nil)
@@ -340,6 +343,9 @@ goose.Web(webPlatform, webModule, nil)
 // CLI: Inventory management, reports
 goose.CLI(cliPlatform, cliModule, nil)
 ```
+
+SPA instances run as server instances alongside API and Web — see the
+[SPA Platform](../platforms/spa.md) guide.
 
 ## Best Practices
 

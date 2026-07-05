@@ -27,11 +27,12 @@ goose app --name=<name> --template=<template> [options]
 | Flag | Description | Values |
 |------|-------------|--------|
 | `--name` | Application name | Any valid Go package name |
-| `--template` | Application template | `api`, `web`, `cli`, `multi` |
+| `--template` | Application template | `api`, `web`, `cli`, `multi`, `spa` |
 
 **Optional Flags:**
 | Flag | Description | Default |
 |------|-------------|---------|
+| `--framework` | Frontend framework (required with `--template=spa`) | `react`, `vue`, `svelte`, `ng` |
 | `--path` | Output directory | Current directory |
 
 **Examples:**
@@ -48,6 +49,9 @@ goose app --name=mycli --template=cli
 
 # Create a multi-platform application
 goose app --name=mymulti --template=multi
+
+# Create a single-page application (Go API + frontend as one service)
+goose app --name=myspa --template=spa --framework=react
 
 # Create in specific directory
 goose app --name=myapp --template=api --path=/projects

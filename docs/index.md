@@ -87,6 +87,7 @@ Welcome to the official documentation for **Goose** — an awesome, all-in-one, 
 | -------------------------------- | --------------------------- |
 | [API Platform](platforms/api.md) | Building RESTful APIs       |
 | [Web Platform](platforms/web.md) | Building web applications   |
+| [SPA Platform](platforms/spa.md) | Single-page apps + API as one service |
 | [CLI Platform](platforms/cli.md) | Building command-line tools |
 
 ### 🛠️ Goose CLI
